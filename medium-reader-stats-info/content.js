@@ -45,6 +45,7 @@ const state = {
   selectDeleteTimestamp: null,
   statusEl: null,
   summaryEl: null,
+  dailySummaryEl: null,
   diffContainerEl: null,
   trendContainerEl: null
 };
@@ -482,6 +483,89 @@ function toneClass(value) {
   return value > 0 ? "mw-pos" : "mw-neg";
 }
 
+function hasAnyTrackedChange(row) {
+  if (row.status === "new" || row.status === "removed") {
+    return true;
+  }
+
+  const trackedDeltas = [
+    row.presentationsDelta,
+    row.viewsDelta,
+    row.readsDelta,
+    row.earningsDelta
+  ];
+
+  return trackedDeltas.some((value) => value !== null && value !== 0);
+}
+
+function renderDailyChangesSummary() {
+  if (!state.dailySummaryEl) {
+    return;
+  }
+
+  const [baseId, targetId] = findDefaultComparison();
+  if (!baseId || !targetId) {
+    state.dailySummaryEl.innerHTML = "<div class='mw-empty'>Need at least two snapshots to show daily changes.</div>";
+    return;
+  }
+
+  const baseSnapshot = getSnapshotById(baseId);
+  const targetSnapshot = getSnapshotById(targetId);
+  if (!baseSnapshot || !targetSnapshot) {
+    state.dailySummaryEl.innerHTML = "<div class='mw-empty'>Unable to load baseline snapshots.</div>";
+    return;
+  }
+
+  const changedRows = computeDiffRows(baseSnapshot, targetSnapshot)
+    .filter((row) => hasAnyTrackedChange(row))
+    .sort((a, b) => {
+      const earningsA = Math.abs(a.earningsDelta || 0);
+      const earningsB = Math.abs(b.earningsDelta || 0);
+      if (earningsA !== earningsB) {
+        return earningsB - earningsA;
+      }
+      const readsA = Math.abs(a.readsDelta || 0);
+      const readsB = Math.abs(b.readsDelta || 0);
+      if (readsA !== readsB) {
+        return readsB - readsA;
+      }
+      return a.storyName.localeCompare(b.storyName);
+    });
+
+  if (!changedRows.length) {
+    state.dailySummaryEl.innerHTML = `
+      <div class="mw-summary-head">Comparing ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>
+      <div class='mw-empty'>No tracked changes detected across stories.</div>
+    `;
+    return;
+  }
+
+  const items = changedRows.map((row) => {
+    const viewsTone = toneClass(row.viewsDelta);
+    const readsTone = toneClass(row.readsDelta);
+    const earningsTone = toneClass(row.earningsDelta);
+    const statusText = row.status === "existing" ? "changed" : row.status;
+
+    return `
+      <div class="mw-change-item">
+        <div class="mw-change-title">${row.storyName}</div>
+        <div class="mw-change-meta">status: ${statusText}</div>
+        <div class="mw-change-deltas">
+          <span class="${viewsTone}">Views ${formatNumber(row.viewsDelta)}</span>
+          <span class="${readsTone}">Reads ${formatNumber(row.readsDelta)}</span>
+          <span class="${earningsTone}">Earnings ${formatCurrency(row.earningsDelta)}</span>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  state.dailySummaryEl.innerHTML = `
+    <div class="mw-summary-head">Comparing ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>
+    <div class="mw-summary-count">Stories with changes: ${changedRows.length}</div>
+    <div class="mw-change-list">${items}</div>
+  `;
+}
+
 function renderDiff(baseId, targetId) {
   if (!state.diffContainerEl) {
     return;
@@ -693,6 +777,7 @@ function refreshSelectOptions() {
 function refreshPanelData() {
   refreshSnapshotSummary();
   refreshSelectOptions();
+  renderDailyChangesSummary();
 
   const [defaultA, defaultB] = findDefaultComparison();
   if (state.selectCompareA && !state.selectCompareA.value && defaultA) {
@@ -830,6 +915,34 @@ function createPanelMarkup() {
         font-weight: 700;
         margin-bottom: 6px;
       }
+      #${PANEL_IDS.panel} .mw-summary-head {
+        font-weight: 700;
+        margin-bottom: 4px;
+      }
+      #${PANEL_IDS.panel} .mw-summary-count {
+        margin-bottom: 6px;
+      }
+      #${PANEL_IDS.panel} .mw-change-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      #${PANEL_IDS.panel} .mw-change-item {
+        border: 1px solid #eee;
+        padding: 6px;
+      }
+      #${PANEL_IDS.panel} .mw-change-title {
+        font-weight: 700;
+      }
+      #${PANEL_IDS.panel} .mw-change-meta {
+        color: #555;
+        margin: 2px 0 4px;
+      }
+      #${PANEL_IDS.panel} .mw-change-deltas {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
     </style>
 
     <button id="${PANEL_IDS.launcher}" title="Open Medium Stats panel">MW</button>
@@ -842,6 +955,14 @@ function createPanelMarkup() {
 
       <div id="mw-status" class="mw-status">Ready.</div>
       <div id="mw-summary" class="mw-summary"></div>
+
+      <div class="mw-section" id="mw-daily-summary-section">
+        <div class="mw-row" style="justify-content: space-between; align-items: center;">
+          <div class="mw-section-title" style="margin-bottom: 0;">Daily Changes Summary</div>
+          <button id="mw-refresh-daily-summary" type="button">Refresh</button>
+        </div>
+        <div id="mw-daily-summary"></div>
+      </div>
 
       <div class="mw-section">
         <div class="mw-section-title">Snapshots</div>
@@ -896,6 +1017,7 @@ function wirePanelEvents() {
 
   state.statusEl = document.getElementById("mw-status");
   state.summaryEl = document.getElementById("mw-summary");
+  state.dailySummaryEl = document.getElementById("mw-daily-summary");
   state.selectCompareA = document.getElementById("mw-compare-a");
   state.selectCompareB = document.getElementById("mw-compare-b");
   state.diffContainerEl = document.getElementById("mw-diff");
@@ -906,6 +1028,10 @@ function wirePanelEvents() {
 
   launcher.addEventListener("click", () => togglePanel(panel.style.display === "none"));
   document.getElementById("mw-close-panel").addEventListener("click", () => togglePanel(false));
+  document.getElementById("mw-refresh-daily-summary").addEventListener("click", () => {
+    renderDailyChangesSummary();
+    setStatus("Daily changes summary refreshed.");
+  });
 
   document.getElementById("mw-manual-snapshot").addEventListener("click", async () => {
     try {
@@ -983,6 +1109,17 @@ function wireKeyboardShortcuts() {
       togglePanel(true);
       if (state.selectCompareA) {
         state.selectCompareA.focus();
+      }
+      return;
+    }
+
+    if (event.code === "KeyD") {
+      event.preventDefault();
+      togglePanel(true);
+      renderDailyChangesSummary();
+      const section = document.getElementById("mw-daily-summary-section");
+      if (section) {
+        section.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     }
   });

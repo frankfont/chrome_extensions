@@ -35,12 +35,22 @@ Open methods:
 - Click the extension icon in the Chrome toolbar to open the panel.
 - Use a keyboard shortcut to open the panel when viewing `https://medium.com/me/stats`.
 
+## Daily Changes Summary
+
+The panel includes an easy-access **Daily Changes Summary** near the top.
+
+- It automatically compares the latest snapshot to the most recent prior-day snapshot.
+- It shows only stories with tracked changes (or `new`/`removed` status).
+- It highlights Views, Reads, and Earnings deltas for quick scanning.
+- Use the `Refresh` button in that section to re-render after new snapshots.
+
 ## Keyboard Shortcuts
 
 Default shortcuts (Mac):
 
 - `Option+Shift+S`: Open the extension panel and run a manual snapshot.
 - `Option+Shift+0`: Open the extension panel and focus comparison controls.
+- `Option+Shift+D`: Open the extension panel and jump to Daily Changes Summary.
 
 Shortcut setup:
 
