@@ -20,6 +20,7 @@
 */
 
 const TARGET_URL_PREFIX = "https://medium.com/me/stats";
+const CHANGE_EPSILON = 0.000001;
 const AUTO_SCROLL_STABLE_ITERATIONS = 3;
 const AUTO_SCROLL_MAX_ITERATIONS = 40;
 const AUTO_SCROLL_DELAY_MS = 450;
@@ -38,6 +39,7 @@ const PANEL_IDS = {
 const state = {
   snapshots: [],
   panelReady: false,
+  launcherEl: null,
   selectCompareA: null,
   selectCompareB: null,
   selectTrendStory: null,
@@ -93,6 +95,48 @@ function formatNumber(value) {
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 2
   }).format(value);
+}
+
+function formatSignedNumber(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-";
+  }
+  const abs = formatNumber(Math.abs(value));
+  if (value > 0) {
+    return `+${abs}`;
+  }
+  if (value < 0) {
+    return `-${abs}`;
+  }
+  return "0";
+}
+
+function formatSignedCurrency(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-";
+  }
+  const abs = formatCurrency(Math.abs(value));
+  if (value > 0) {
+    return `+${abs}`;
+  }
+  if (value < 0) {
+    return `-${abs}`;
+  }
+  return formatCurrency(0);
+}
+
+function formatSignedPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-";
+  }
+  const abs = `${Math.abs(value).toFixed(1)}%`;
+  if (value > 0) {
+    return `+${abs}`;
+  }
+  if (value < 0) {
+    return `-${abs}`;
+  }
+  return "0.0%";
 }
 
 function parseScaledNumber(text) {
@@ -495,7 +539,7 @@ function hasAnyTrackedChange(row) {
     row.earningsDelta
   ];
 
-  return trackedDeltas.some((value) => value !== null && value !== 0);
+  return trackedDeltas.some((value) => value !== null && Math.abs(value) > CHANGE_EPSILON);
 }
 
 function renderDailyChangesSummary() {
@@ -551,9 +595,9 @@ function renderDailyChangesSummary() {
         <div class="mw-change-title">${row.storyName}</div>
         <div class="mw-change-meta">status: ${statusText}</div>
         <div class="mw-change-deltas">
-          <span class="${viewsTone}">Views ${formatNumber(row.viewsDelta)}</span>
-          <span class="${readsTone}">Reads ${formatNumber(row.readsDelta)}</span>
-          <span class="${earningsTone}">Earnings ${formatCurrency(row.earningsDelta)}</span>
+          <span class="${viewsTone}">Views ${formatSignedNumber(row.viewsDelta)}</span>
+          <span class="${readsTone}">Reads ${formatSignedNumber(row.readsDelta)}</span>
+          <span class="${earningsTone}">Earnings ${formatSignedCurrency(row.earningsDelta)}</span>
         </div>
       </div>
     `;
@@ -564,6 +608,42 @@ function renderDailyChangesSummary() {
     <div class="mw-summary-count">Stories with changes: ${changedRows.length}</div>
     <div class="mw-change-list">${items}</div>
   `;
+}
+
+function hasPositiveDailyReadOrEarningsChange() {
+  const [baseId, targetId] = findDefaultComparison();
+  if (!baseId || !targetId) {
+    return false;
+  }
+
+  const baseSnapshot = getSnapshotById(baseId);
+  const targetSnapshot = getSnapshotById(targetId);
+  if (!baseSnapshot || !targetSnapshot) {
+    return false;
+  }
+
+  const rows = computeDiffRows(baseSnapshot, targetSnapshot);
+  return rows.some((row) => (row.readsDelta !== null && row.readsDelta > 0) || (row.earningsDelta !== null && row.earningsDelta > 0));
+}
+
+function updateLauncherSignal() {
+  if (!state.launcherEl) {
+    return;
+  }
+
+  const hasIncrease = hasPositiveDailyReadOrEarningsChange();
+  if (hasIncrease) {
+    state.launcherEl.style.background = "#b7e4c7";
+    state.launcherEl.style.borderColor = "#2d6a4f";
+    state.launcherEl.style.color = "#1b4332";
+    state.launcherEl.title = "Open Medium Stats panel (reads/earnings increased since prior day)";
+    return;
+  }
+
+  state.launcherEl.style.background = "#fff";
+  state.launcherEl.style.borderColor = "#111";
+  state.launcherEl.style.color = "#111";
+  state.launcherEl.title = "Open Medium Stats panel";
 }
 
 function renderDiff(baseId, targetId) {
@@ -585,12 +665,12 @@ function renderDiff(baseId, targetId) {
     <tr>
       <td>${row.storyName}</td>
       <td>${row.status}</td>
-      <td class="${toneClass(row.viewsDelta)}">${formatNumber(row.viewsDelta)}</td>
-      <td class="${toneClass(row.viewsPct)}">${row.viewsPct === null ? "-" : `${row.viewsPct.toFixed(1)}%`}</td>
-      <td class="${toneClass(row.readsDelta)}">${formatNumber(row.readsDelta)}</td>
-      <td class="${toneClass(row.readsPct)}">${row.readsPct === null ? "-" : `${row.readsPct.toFixed(1)}%`}</td>
-      <td class="${toneClass(row.earningsDelta)}">${formatCurrency(row.earningsDelta)}</td>
-      <td class="${toneClass(row.earningsPct)}">${row.earningsPct === null ? "-" : `${row.earningsPct.toFixed(1)}%`}</td>
+      <td class="${toneClass(row.viewsDelta)}">${formatSignedNumber(row.viewsDelta)}</td>
+      <td class="${toneClass(row.viewsPct)}">${formatSignedPercent(row.viewsPct)}</td>
+      <td class="${toneClass(row.readsDelta)}">${formatSignedNumber(row.readsDelta)}</td>
+      <td class="${toneClass(row.readsPct)}">${formatSignedPercent(row.readsPct)}</td>
+      <td class="${toneClass(row.earningsDelta)}">${formatSignedCurrency(row.earningsDelta)}</td>
+      <td class="${toneClass(row.earningsPct)}">${formatSignedPercent(row.earningsPct)}</td>
     </tr>
   `).join("");
 
@@ -778,6 +858,7 @@ function refreshPanelData() {
   refreshSnapshotSummary();
   refreshSelectOptions();
   renderDailyChangesSummary();
+  updateLauncherSignal();
 
   const [defaultA, defaultB] = findDefaultComparison();
   if (state.selectCompareA && !state.selectCompareA.value && defaultA) {
@@ -1015,6 +1096,7 @@ function wirePanelEvents() {
     return;
   }
 
+  state.launcherEl = launcher;
   state.statusEl = document.getElementById("mw-status");
   state.summaryEl = document.getElementById("mw-summary");
   state.dailySummaryEl = document.getElementById("mw-daily-summary");
