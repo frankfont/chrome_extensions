@@ -49,6 +49,14 @@ const state = {
   statusEl: null,
   summaryEl: null,
   dailySummaryEl: null,
+  dailyFilterPresentationsEl: null,
+  dailyFilterViewsEl: null,
+  dailyFilterReadsEl: null,
+  dailyFilterEarningsEl: null,
+  compareFilterPresentationsEl: null,
+  compareFilterViewsEl: null,
+  compareFilterReadsEl: null,
+  compareFilterEarningsEl: null,
   diffContainerEl: null,
   trendContainerEl: null
 };
@@ -521,15 +529,50 @@ function toneClass(value) {
   return value > 0 ? "mw-pos" : "mw-neg";
 }
 
-function hasAnyTrackedChange(row) {
-  const trackedDeltas = [
-    row.presentationsDelta,
-    row.viewsDelta,
-    row.readsDelta,
-    row.earningsDelta
-  ];
+function hasDeltaChange(value) {
+  return value !== null && value !== undefined && !Number.isNaN(value) && Math.abs(value) > CHANGE_EPSILON;
+}
 
-  return trackedDeltas.some((value) => value !== null && Math.abs(value) > CHANGE_EPSILON);
+function getDailySummaryMetricFilters() {
+  return {
+    presentations: state.dailyFilterPresentationsEl ? state.dailyFilterPresentationsEl.checked : true,
+    views: state.dailyFilterViewsEl ? state.dailyFilterViewsEl.checked : true,
+    reads: state.dailyFilterReadsEl ? state.dailyFilterReadsEl.checked : true,
+    earnings: state.dailyFilterEarningsEl ? state.dailyFilterEarningsEl.checked : true
+  };
+}
+
+function getCompareMetricFilters() {
+  return {
+    presentations: state.compareFilterPresentationsEl ? state.compareFilterPresentationsEl.checked : true,
+    views: state.compareFilterViewsEl ? state.compareFilterViewsEl.checked : true,
+    reads: state.compareFilterReadsEl ? state.compareFilterReadsEl.checked : true,
+    earnings: state.compareFilterEarningsEl ? state.compareFilterEarningsEl.checked : true
+  };
+}
+
+function hasAnyTrackedChange(row, metricFilters) {
+  const filters = metricFilters || getDailySummaryMetricFilters();
+  const trackedDeltas = [];
+
+  if (filters.presentations) {
+    trackedDeltas.push(row.presentationsDelta);
+  }
+  if (filters.views) {
+    trackedDeltas.push(row.viewsDelta);
+  }
+  if (filters.reads) {
+    trackedDeltas.push(row.readsDelta);
+  }
+  if (filters.earnings) {
+    trackedDeltas.push(row.earningsDelta);
+  }
+
+  if (!trackedDeltas.length) {
+    return false;
+  }
+
+  return trackedDeltas.some((value) => hasDeltaChange(value));
 }
 
 function renderDailyChangesSummary() {
@@ -550,8 +593,17 @@ function renderDailyChangesSummary() {
     return;
   }
 
+  const metricFilters = getDailySummaryMetricFilters();
+  if (!Object.values(metricFilters).some(Boolean)) {
+    state.dailySummaryEl.innerHTML = `
+      <div class="mw-summary-head">Comparing ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>
+      <div class='mw-empty'>Enable at least one metric filter to show stories.</div>
+    `;
+    return;
+  }
+
   const changedRows = computeDiffRows(baseSnapshot, targetSnapshot)
-    .filter((row) => hasAnyTrackedChange(row))
+    .filter((row) => hasAnyTrackedChange(row, metricFilters))
     .sort((a, b) => {
       const earningsA = Math.abs(a.earningsDelta || 0);
       const earningsB = Math.abs(b.earningsDelta || 0);
@@ -650,7 +702,14 @@ function renderDiff(baseId, targetId) {
     return;
   }
 
-  const rows = computeDiffRows(baseSnapshot, targetSnapshot);
+  const metricFilters = getCompareMetricFilters();
+  if (!Object.values(metricFilters).some(Boolean)) {
+    state.diffContainerEl.innerHTML = "<div class='mw-empty'>Enable at least one Compare filter to show stories.</div>";
+    return;
+  }
+
+  const rows = computeDiffRows(baseSnapshot, targetSnapshot)
+    .filter((row) => hasAnyTrackedChange(row, metricFilters));
   const header = `<div class="mw-compare-title">Comparing ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>`;
 
   const tableRows = rows.map((row) => `
@@ -1059,6 +1118,18 @@ function createPanelMarkup() {
         gap: 8px;
         flex-wrap: wrap;
       }
+      #${PANEL_IDS.panel} .mw-checkbox-row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin: 6px 0 8px;
+      }
+      #${PANEL_IDS.panel} .mw-checkbox-row label {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+      }
     </style>
 
     <button id="${PANEL_IDS.launcher}" title="Open Medium Stats panel">MW</button>
@@ -1080,6 +1151,12 @@ function createPanelMarkup() {
           <div class="mw-section-title" style="margin-bottom: 0;">Daily Changes Summary</div>
           <button id="mw-refresh-daily-summary" type="button">Refresh</button>
         </div>
+        <div class="mw-checkbox-row" aria-label="Daily summary metric filters">
+          <label><input id="mw-filter-presentations" type="checkbox" checked/>Presentations</label>
+          <label><input id="mw-filter-views" type="checkbox" checked/>Views</label>
+          <label><input id="mw-filter-reads" type="checkbox" checked/>Reads</label>
+          <label><input id="mw-filter-earnings" type="checkbox" checked/>Earnings</label>
+        </div>
         <div id="mw-daily-summary"></div>
       </div>
 
@@ -1093,6 +1170,12 @@ function createPanelMarkup() {
 
       <div class="mw-section">
         <div class="mw-section-title">Compare Any Two</div>
+        <div class="mw-checkbox-row" aria-label="Compare metric filters">
+          <label><input id="mw-compare-filter-presentations" type="checkbox" checked/>Presentations</label>
+          <label><input id="mw-compare-filter-views" type="checkbox" checked/>Views</label>
+          <label><input id="mw-compare-filter-reads" type="checkbox" checked/>Reads</label>
+          <label><input id="mw-compare-filter-earnings" type="checkbox" checked/>Earnings</label>
+        </div>
         <div class="mw-row">
           <select id="mw-compare-a"></select>
           <select id="mw-compare-b"></select>
@@ -1139,6 +1222,14 @@ function wirePanelEvents() {
   state.statusEl = document.getElementById("mw-status");
   state.summaryEl = document.getElementById("mw-summary");
   state.dailySummaryEl = document.getElementById("mw-daily-summary");
+  state.dailyFilterPresentationsEl = document.getElementById("mw-filter-presentations");
+  state.dailyFilterViewsEl = document.getElementById("mw-filter-views");
+  state.dailyFilterReadsEl = document.getElementById("mw-filter-reads");
+  state.dailyFilterEarningsEl = document.getElementById("mw-filter-earnings");
+  state.compareFilterPresentationsEl = document.getElementById("mw-compare-filter-presentations");
+  state.compareFilterViewsEl = document.getElementById("mw-compare-filter-views");
+  state.compareFilterReadsEl = document.getElementById("mw-compare-filter-reads");
+  state.compareFilterEarningsEl = document.getElementById("mw-compare-filter-earnings");
   state.selectCompareA = document.getElementById("mw-compare-a");
   state.selectCompareB = document.getElementById("mw-compare-b");
   state.diffContainerEl = document.getElementById("mw-diff");
@@ -1153,6 +1244,34 @@ function wirePanelEvents() {
   document.getElementById("mw-refresh-daily-summary").addEventListener("click", () => {
     renderDailyChangesSummary();
     setStatus("Daily changes summary refreshed.");
+  });
+
+  [
+    state.dailyFilterPresentationsEl,
+    state.dailyFilterViewsEl,
+    state.dailyFilterReadsEl,
+    state.dailyFilterEarningsEl
+  ].forEach((checkbox) => {
+    if (!checkbox) {
+      return;
+    }
+    checkbox.addEventListener("change", () => {
+      renderDailyChangesSummary();
+    });
+  });
+
+  [
+    state.compareFilterPresentationsEl,
+    state.compareFilterViewsEl,
+    state.compareFilterReadsEl,
+    state.compareFilterEarningsEl
+  ].forEach((checkbox) => {
+    if (!checkbox) {
+      return;
+    }
+    checkbox.addEventListener("change", () => {
+      renderDiff(state.selectCompareA ? state.selectCompareA.value : "", state.selectCompareB ? state.selectCompareB.value : "");
+    });
   });
 
   document.getElementById("mw-manual-snapshot").addEventListener("click", async () => {

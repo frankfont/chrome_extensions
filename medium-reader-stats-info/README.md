@@ -43,6 +43,9 @@ The panel includes an easy-access **Daily Changes Summary** near the top.
 - Daily baseline rule:
 	- Use the **earliest snapshot** from the **most recent prior day**.
 	- If no prior day exists, use the **first snapshot from the current day**.
+- Metric filter checkboxes are available for: Presentations, Views, Reads, Earnings.
+- All metric filters are enabled by default.
+- If a metric checkbox is unchecked, that metric no longer qualifies a story for inclusion in the summary.
 - It shows only stories with actual numeric tracked changes.
 - It highlights Presentations, Views, Reads, and Earnings deltas for quick scanning.
 - Positive deltas are always prefixed with `+`.
@@ -51,6 +54,10 @@ The panel includes an easy-access **Daily Changes Summary** near the top.
 ## Compare Dates Defaults
 
 The **Compare Any Two** area supports manual picker-based comparisons and a default quick compare.
+
+- Metric filter checkboxes are available for: Presentations, Views, Reads, Earnings.
+- All compare metric filters are enabled by default.
+- If a metric checkbox is unchecked, that metric no longer qualifies a story for inclusion in compare results.
 
 - `Run Default Comparison` logic:
 	- Base snapshot (A): **earliest available snapshot from the earliest date**.
