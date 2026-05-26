@@ -40,6 +40,7 @@ const state = {
   snapshots: [],
   panelReady: false,
   launcherEl: null,
+  panelEl: null,
   selectCompareA: null,
   selectCompareB: null,
   selectTrendStory: null,
@@ -300,46 +301,6 @@ function extractRowsFromTable() {
   return parsed;
 }
 
-function extractRowsFromStoryLinks() {
-  const parsed = [];
-  const links = Array.from(document.querySelectorAll("a[href*='/p/']"));
-  const visited = new Set();
-
-  links.forEach((link) => {
-    const mediumUrl = link.href;
-    const storyId = getStoryIdFromUrl(mediumUrl);
-    const storyName = sanitizeText(link.textContent);
-    if (!storyName) {
-      return;
-    }
-
-    const dedupeKey = `${storyId}:${storyName}`;
-    if (visited.has(dedupeKey)) {
-      return;
-    }
-    visited.add(dedupeKey);
-
-    const container = link.closest("tr, article, section, div");
-    const containerText = sanitizeText(container ? container.textContent : "");
-    const allNumbers = Array.from(containerText.matchAll(/-?[\d,]+(?:\.\d+)?\s*[kmbKMB]?/g))
-      .map((m) => parseScaledNumber(m[0]))
-      .filter((n) => n !== null);
-    const moneyMatch = containerText.match(/\$\s*-?[\d,]+(?:\.\d+)?\s*[kmbKMB]?/);
-
-    parsed.push({
-      storyName,
-      presentations: allNumbers[0] ?? null,
-      views: allNumbers[1] ?? null,
-      reads: allNumbers[2] ?? null,
-      earnings: moneyMatch ? parseCurrency(moneyMatch[0]) : null,
-      mediumUrl,
-      storyId
-    });
-  });
-
-  return parsed;
-}
-
 function dedupeStories(rows) {
   const map = new Map();
   rows.forEach((row) => {
@@ -361,8 +322,7 @@ function dedupeStories(rows) {
 
 function extractStoryRows() {
   const tableRows = extractRowsFromTable();
-  const fallbackRows = extractRowsFromStoryLinks();
-  return dedupeStories([...tableRows, ...fallbackRows]);
+  return dedupeStories(tableRows);
 }
 
 function buildSnapshot(rows, mode) {
@@ -436,14 +396,48 @@ function findDefaultComparison() {
   const latest = state.snapshots[state.snapshots.length - 1];
   const latestDate = toDateKey(latest.capturedAt);
 
+  let priorDayKey = null;
   for (let i = state.snapshots.length - 2; i >= 0; i -= 1) {
+    const candidateDate = toDateKey(state.snapshots[i].capturedAt);
+    if (candidateDate !== latestDate) {
+      priorDayKey = candidateDate;
+      break;
+    }
+  }
+
+  // Daily baseline rule:
+  // 1) earliest snapshot from the most recent prior day, if any
+  // 2) otherwise first snapshot from the current day
+  if (priorDayKey) {
+    for (let i = 0; i < state.snapshots.length; i += 1) {
+      const candidate = state.snapshots[i];
+      if (toDateKey(candidate.capturedAt) === priorDayKey) {
+        return [candidate.id, latest.id];
+      }
+    }
+  }
+
+  for (let i = 0; i < state.snapshots.length; i += 1) {
     const candidate = state.snapshots[i];
-    if (toDateKey(candidate.capturedAt) !== latestDate) {
+    if (toDateKey(candidate.capturedAt) === latestDate) {
       return [candidate.id, latest.id];
     }
   }
 
-  return [state.snapshots[state.snapshots.length - 2].id, latest.id];
+  return [state.snapshots[0].id, latest.id];
+}
+
+function findCompareDatesDefault() {
+  if (state.snapshots.length < 2) {
+    return [null, null];
+  }
+
+  // Snapshots are maintained in ascending timestamp order.
+  // Compare Dates default should span the full available range:
+  // earliest snapshot from earliest date -> latest snapshot from latest date.
+  const earliest = state.snapshots[0];
+  const latest = state.snapshots[state.snapshots.length - 1];
+  return [earliest.id, latest.id];
 }
 
 function getStoryKey(story) {
@@ -528,10 +522,6 @@ function toneClass(value) {
 }
 
 function hasAnyTrackedChange(row) {
-  if (row.status === "new" || row.status === "removed") {
-    return true;
-  }
-
   const trackedDeltas = [
     row.presentationsDelta,
     row.viewsDelta,
@@ -585,6 +575,7 @@ function renderDailyChangesSummary() {
   }
 
   const items = changedRows.map((row) => {
+    const presentationsTone = toneClass(row.presentationsDelta);
     const viewsTone = toneClass(row.viewsDelta);
     const readsTone = toneClass(row.readsDelta);
     const earningsTone = toneClass(row.earningsDelta);
@@ -595,6 +586,7 @@ function renderDailyChangesSummary() {
         <div class="mw-change-title">${row.storyName}</div>
         <div class="mw-change-meta">status: ${statusText}</div>
         <div class="mw-change-deltas">
+          <span class="${presentationsTone}">Presentations ${formatSignedNumber(row.presentationsDelta)}</span>
           <span class="${viewsTone}">Views ${formatSignedNumber(row.viewsDelta)}</span>
           <span class="${readsTone}">Reads ${formatSignedNumber(row.readsDelta)}</span>
           <span class="${earningsTone}">Earnings ${formatSignedCurrency(row.earningsDelta)}</span>
@@ -665,10 +657,16 @@ function renderDiff(baseId, targetId) {
     <tr>
       <td>${row.storyName}</td>
       <td>${row.status}</td>
+      <td>${formatNumber(row.viewsA)}</td>
+      <td>${formatNumber(row.viewsB)}</td>
       <td class="${toneClass(row.viewsDelta)}">${formatSignedNumber(row.viewsDelta)}</td>
       <td class="${toneClass(row.viewsPct)}">${formatSignedPercent(row.viewsPct)}</td>
+      <td>${formatNumber(row.readsA)}</td>
+      <td>${formatNumber(row.readsB)}</td>
       <td class="${toneClass(row.readsDelta)}">${formatSignedNumber(row.readsDelta)}</td>
       <td class="${toneClass(row.readsPct)}">${formatSignedPercent(row.readsPct)}</td>
+      <td>${formatCurrency(row.earningsA)}</td>
+      <td>${formatCurrency(row.earningsB)}</td>
       <td class="${toneClass(row.earningsDelta)}">${formatSignedCurrency(row.earningsDelta)}</td>
       <td class="${toneClass(row.earningsPct)}">${formatSignedPercent(row.earningsPct)}</td>
     </tr>
@@ -682,16 +680,22 @@ function renderDiff(baseId, targetId) {
           <tr>
             <th>Story</th>
             <th>Status</th>
+            <th>Views A</th>
+            <th>Views B</th>
             <th>Views Δ</th>
             <th>Views %</th>
+            <th>Reads A</th>
+            <th>Reads B</th>
             <th>Reads Δ</th>
             <th>Reads %</th>
+            <th>Earnings A</th>
+            <th>Earnings B</th>
             <th>Earnings Δ</th>
             <th>Earnings %</th>
           </tr>
         </thead>
         <tbody>
-          ${tableRows || "<tr><td colspan='8'>No comparable rows found.</td></tr>"}
+          ${tableRows || "<tr><td colspan='14'>No comparable rows found.</td></tr>"}
         </tbody>
       </table>
     </div>
@@ -729,12 +733,28 @@ function renderTrend(storyName) {
     }
   });
 
-  if (!rows.length) {
+  rows.sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
+
+  const todayKey = toDateKey(nowIso());
+  const seenPriorDays = new Set();
+  const filteredRows = rows.filter((row) => {
+    const rowDateKey = toDateKey(row.capturedAt);
+    if (rowDateKey === todayKey) {
+      return true;
+    }
+    if (seenPriorDays.has(rowDateKey)) {
+      return false;
+    }
+    seenPriorDays.add(rowDateKey);
+    return true;
+  });
+
+  if (!filteredRows.length) {
     state.trendContainerEl.innerHTML = "<div class='mw-empty'>No trend data for this story.</div>";
     return;
   }
 
-  const tableRows = rows.map((row) => `
+  const tableRows = filteredRows.map((row) => `
     <tr>
       <td>${formatTimestamp(row.capturedAt)}</td>
       <td>${formatNumber(row.views)}</td>
@@ -763,11 +783,23 @@ function renderTrend(storyName) {
 }
 
 function togglePanel(show) {
-  const panel = document.getElementById(PANEL_IDS.panel);
+  const panel = state.panelEl || document.getElementById(PANEL_IDS.panel);
   if (!panel) {
     return;
   }
   panel.style.display = show ? "block" : "none";
+}
+
+function togglePanelExpanded() {
+  const panel = state.panelEl || document.getElementById(PANEL_IDS.panel);
+  const button = document.getElementById("mw-toggle-panel-size");
+  if (!panel || !button) {
+    return;
+  }
+
+  const expanded = panel.classList.toggle("mw-expanded");
+  button.textContent = expanded ? "Collapse" : "Expand";
+  button.title = expanded ? "Collapse panel width" : "Expand panel width";
 }
 
 function refreshSnapshotSummary() {
@@ -860,7 +892,7 @@ function refreshPanelData() {
   renderDailyChangesSummary();
   updateLauncherSignal();
 
-  const [defaultA, defaultB] = findDefaultComparison();
+  const [defaultA, defaultB] = findCompareDatesDefault();
   if (state.selectCompareA && !state.selectCompareA.value && defaultA) {
     state.selectCompareA.value = defaultA;
   }
@@ -929,6 +961,9 @@ function createPanelMarkup() {
         font-size: 12px;
         color: #111;
         display: none;
+      }
+      #${PANEL_IDS.panel}.mw-expanded {
+        width: min(92vw, 1180px);
       }
       #${PANEL_IDS.panel} .mw-row {
         display: flex;
@@ -1031,7 +1066,10 @@ function createPanelMarkup() {
     <aside id="${PANEL_IDS.panel}" aria-live="polite">
       <div class="mw-row" style="justify-content: space-between; align-items: center;">
         <div class="mw-title">Medium Reader Stats</div>
-        <button id="mw-close-panel" type="button">Close</button>
+        <div class="mw-row" style="margin-bottom: 0;">
+          <button id="mw-toggle-panel-size" type="button" title="Expand panel width">Expand</button>
+          <button id="mw-close-panel" type="button">Close</button>
+        </div>
       </div>
 
       <div id="mw-status" class="mw-status">Ready.</div>
@@ -1097,6 +1135,7 @@ function wirePanelEvents() {
   }
 
   state.launcherEl = launcher;
+  state.panelEl = panel;
   state.statusEl = document.getElementById("mw-status");
   state.summaryEl = document.getElementById("mw-summary");
   state.dailySummaryEl = document.getElementById("mw-daily-summary");
@@ -1109,6 +1148,7 @@ function wirePanelEvents() {
   state.selectDeleteTimestamp = document.getElementById("mw-delete-timestamp");
 
   launcher.addEventListener("click", () => togglePanel(panel.style.display === "none"));
+  document.getElementById("mw-toggle-panel-size").addEventListener("click", () => togglePanelExpanded());
   document.getElementById("mw-close-panel").addEventListener("click", () => togglePanel(false));
   document.getElementById("mw-refresh-daily-summary").addEventListener("click", () => {
     renderDailyChangesSummary();
@@ -1124,7 +1164,7 @@ function wirePanelEvents() {
   });
 
   document.getElementById("mw-run-default-compare").addEventListener("click", () => {
-    const [a, b] = findDefaultComparison();
+    const [a, b] = findCompareDatesDefault();
     if (!a || !b) {
       setStatus("Need at least two snapshots for default comparison.", true);
       return;

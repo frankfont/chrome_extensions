@@ -39,10 +39,24 @@ Open methods:
 
 The panel includes an easy-access **Daily Changes Summary** near the top.
 
-- It automatically compares the latest snapshot to the most recent prior-day snapshot.
-- It shows only stories with tracked changes (or `new`/`removed` status).
-- It highlights Views, Reads, and Earnings deltas for quick scanning.
+- It automatically compares the latest snapshot against a daily baseline.
+- Daily baseline rule:
+	- Use the **earliest snapshot** from the **most recent prior day**.
+	- If no prior day exists, use the **first snapshot from the current day**.
+- It shows only stories with actual numeric tracked changes.
+- It highlights Presentations, Views, Reads, and Earnings deltas for quick scanning.
+- Positive deltas are always prefixed with `+`.
 - Use the `Refresh` button in that section to re-render after new snapshots.
+
+## Compare Dates Defaults
+
+The **Compare Any Two** area supports manual picker-based comparisons and a default quick compare.
+
+- `Run Default Comparison` logic:
+	- Base snapshot (A): **earliest available snapshot from the earliest date**.
+	- Target snapshot (B): **latest available snapshot from the latest date**.
+
+This gives a full-range comparison across all available saved history.
 
 ## Keyboard Shortcuts
 
@@ -68,24 +82,33 @@ Shortcut setup:
 
 The UI supports:
 
-- Latest vs previous baseline
+- Daily baseline comparison
 - Any two snapshots selected by user
 - Trend over time
 
-Default baseline rule:
+Comparison outputs include:
 
-- Compare latest current snapshot against the last available snapshot from the most recent prior day that has a snapshot.
+- Baseline and target values (`A` and `B`) for Views, Reads, Earnings
+- Delta columns with signed values (`+` for positive)
+- Percent delta columns with signed values
+- Color coding for positive/negative changes
 
-Diff display includes:
+Story presence rules:
 
-- Absolute delta
-- Percentage delta
-- Color coding (positive/negative)
-- Sortable columns
+- Present in target only: `new`
+- Present in base only: `removed`
+- Present in both: `existing`
 
-Story presence changes:
+## Trend Over Time Logic
 
-- If a story exists in only one of the two snapshots, show it as `new` or `removed`.
+- Rows are sorted most recent first.
+- For **today**, multiple snapshots may appear.
+- For any **earlier day**, only that day's most recent snapshot is shown.
+
+## Panel Usability
+
+- The panel has an `Expand`/`Collapse` button to widen the layout for large comparison tables.
+- The floating `MW` launcher turns green when Reads or Earnings increased in the default daily comparison.
 
 ## Data Management
 
@@ -121,3 +144,4 @@ The extension should show clear user-facing errors for cases such as:
 4. Select the `medium-reader-stats-info` folder.
 5. Visit `https://medium.com/me/stats` while logged into Medium.
 6. Open the extension panel from the toolbar icon or keyboard shortcut to create manual snapshots and run comparisons.
+7. Use `Run Default Comparison` for full-range compare or Daily Changes Summary for day-level change detection.
