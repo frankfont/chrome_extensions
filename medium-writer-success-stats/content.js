@@ -1603,6 +1603,22 @@ function createPanelMarkup() {
         margin-bottom: 6px;
         border-bottom: 1px solid #8dc5a1;
       }
+      #${PANEL_IDS.panel} .mw-profile-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        overflow: hidden;
+        border: 1px solid #8dc5a1;
+      }
+      #${PANEL_IDS.panel} .mw-profile-link img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
       #${PANEL_IDS.panel} .mw-table-wrap {
         overflow: auto;
         max-height: 200px;
@@ -1703,6 +1719,9 @@ function createPanelMarkup() {
       <div class="mw-row mw-panel-header" style="justify-content: space-between; align-items: center;">
         <div class="mw-title">Medium Writer Success Stats</div>
         <div class="mw-row" style="margin-bottom: 0;">
+          <a class="mw-profile-link" href="https://medium.com/@frankfont123" target="_blank" rel="noopener noreferrer" title="Open @frankfont123 on Medium">
+            <img src="${chrome.runtime.getURL("author.png")}" alt="Frank Font profile" />
+          </a>
           <button id="mw-toggle-panel-size" type="button" title="Expand panel width">Expand</button>
           <button id="mw-close-panel" type="button">Close</button>
         </div>

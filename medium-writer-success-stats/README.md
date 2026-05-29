@@ -4,6 +4,8 @@ A Chrome extension for Medium authors that captures and compares story performan
 
 Target page: https://medium.com/me/stats
 
+Created by ![author profile picture](author.png) Frank Font 2026
+
 ## What It Tracks
 
 For each story snapshot:
