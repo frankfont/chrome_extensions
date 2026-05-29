@@ -31,6 +31,9 @@ const ROUTE_CHECK_INTERVAL_MS = 500;
 const DEFAULT_TREND_GROUP_MAX_SIZE = 100;
 const MIN_TREND_GROUP_MAX_SIZE = 2;
 const MAX_TREND_GROUP_MAX_SIZE = 1000;
+const TREND_COLOR_VIEWS = "#d97706";
+const TREND_COLOR_READS = "#2563eb";
+const TREND_COLOR_EARNINGS = "#16a34a";
 
 const STORAGE_KEYS = {
   snapshots: "mwSnapshots",
@@ -59,6 +62,12 @@ const state = {
   trendFilterContainerEl: null,
   trendGroupSettingsEl: null,
   trendGroupMaxInputEl: null,
+  trendSectionEl: null,
+  trendChartOverlayEl: null,
+  trendChartTitleEl: null,
+  trendChartSvgEl: null,
+  trendChartCloseBtnEl: null,
+  trendChartOutsideClickHandler: null,
   trendStoryGroups: [],
   activeTrendStoryGroupKey: "",
   trendGroupMaxSize: DEFAULT_TREND_GROUP_MAX_SIZE,
@@ -2030,14 +2039,9 @@ function renderTrendStoryGroupFilters() {
   });
 }
 
-function renderTrend(storyName) {
-  if (!state.trendContainerEl) {
-    return;
-  }
-
+function getTrendRows(storyName) {
   if (!storyName) {
-    state.trendContainerEl.innerHTML = "<div class='mw-empty'>Select a story to see trend history.</div>";
-    return;
+    return [];
   }
 
   const rows = [];
@@ -2057,7 +2061,7 @@ function renderTrend(storyName) {
 
   const todayKey = toDateKey(nowIso());
   const seenPriorDays = new Set();
-  const filteredRows = rows.filter((row) => {
+  return rows.filter((row) => {
     const rowDateKey = toDateKey(row.capturedAt);
     if (rowDateKey === todayKey) {
       return true;
@@ -2068,6 +2072,211 @@ function renderTrend(storyName) {
     seenPriorDays.add(rowDateKey);
     return true;
   });
+}
+
+function formatTrendDateLabel(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return String(iso || "");
+  }
+
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${month}/${day}`;
+}
+
+function buildTrendSeriesGeometry(rowsAsc, key, left, top, width, height, minValue, maxValue) {
+  const seriesRows = rowsAsc
+    .map((row, index) => ({ index, value: Number(row[key]), capturedAt: row.capturedAt }))
+    .filter((item) => Number.isFinite(item.value));
+
+  if (!seriesRows.length) {
+    return { path: "", circles: "" };
+  }
+
+  const min = Number.isFinite(minValue) ? minValue : 0;
+  const max = Number.isFinite(maxValue) ? maxValue : min + 1;
+  const span = Math.max(0.000001, max - min);
+
+  const toX = (index) => (rowsAsc.length <= 1
+    ? left + width / 2
+    : left + (index / (rowsAsc.length - 1)) * width);
+  const toY = (value) => {
+    return top + height - ((value - min) / span) * height;
+  };
+
+  const points = seriesRows.map((item) => `${toX(item.index)},${toY(item.value)}`);
+  const circles = seriesRows.map((item) => {
+    const x = toX(item.index);
+    const y = toY(item.value);
+    return `<circle cx="${x}" cy="${y}" r="2.5" />`;
+  }).join("");
+
+  return {
+    path: points.length ? `M ${points.join(" L ")}` : "",
+    circles
+  };
+}
+
+function positionTrendChartOverlay() {
+  if (!state.panelEl || !state.trendChartOverlayEl || !state.trendSectionEl) {
+    return;
+  }
+
+  const header = state.panelEl.querySelector(".mw-panel-header");
+  if (!header) {
+    return;
+  }
+
+  const overlayTop = header.offsetTop + header.offsetHeight + 4;
+  const overlayBottom = state.trendSectionEl.offsetTop - 6;
+  const overlayHeight = Math.max(160, overlayBottom - overlayTop);
+
+  state.trendChartOverlayEl.style.top = `${overlayTop}px`;
+  state.trendChartOverlayEl.style.left = "8px";
+  state.trendChartOverlayEl.style.right = "8px";
+  state.trendChartOverlayEl.style.height = `${overlayHeight}px`;
+}
+
+function hideTrendChartOverlay() {
+  if (state.trendChartOverlayEl) {
+    state.trendChartOverlayEl.style.display = "none";
+  }
+  if (state.trendChartSvgEl) {
+    state.trendChartSvgEl.innerHTML = "";
+  }
+
+  if (state.trendChartOutsideClickHandler) {
+    document.removeEventListener("mousedown", state.trendChartOutsideClickHandler, true);
+    state.trendChartOutsideClickHandler = null;
+  }
+}
+
+function renderTrendChart(storyName) {
+  if (!state.trendChartSvgEl) {
+    return;
+  }
+
+  const trendRows = getTrendRows(storyName);
+  if (!storyName || !trendRows.length) {
+    hideTrendChartOverlay();
+    return;
+  }
+
+  const rowsAsc = [...trendRows].sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+
+  const svgWidth = 1000;
+  const svgHeight = 420;
+  const margin = { top: 18, right: 24, bottom: 52, left: 40 };
+  const plotWidth = svgWidth - margin.left - margin.right;
+  const plotHeight = svgHeight - margin.top - margin.bottom;
+
+  const xAxisY = margin.top + plotHeight;
+  const latest = rowsAsc[rowsAsc.length - 1] || null;
+
+  const latestViews = latest && Number.isFinite(Number(latest.views)) ? Number(latest.views) : 0;
+  const latestReads = latest && Number.isFinite(Number(latest.reads)) ? Number(latest.reads) : 0;
+  const latestEarnings = latest && Number.isFinite(Number(latest.earnings)) ? Number(latest.earnings) : 0;
+
+  const leftAxisTop = Math.max(10, Math.floor(Math.max(latestViews, latestReads) / 10) * 10 + 10);
+  const rightAxisTop = Math.max(1, Math.floor(latestEarnings) + 1);
+
+  const views = buildTrendSeriesGeometry(rowsAsc, "views", margin.left, margin.top, plotWidth, plotHeight, 0, leftAxisTop);
+  const reads = buildTrendSeriesGeometry(rowsAsc, "reads", margin.left, margin.top, plotWidth, plotHeight, 0, leftAxisTop);
+  const earnings = buildTrendSeriesGeometry(rowsAsc, "earnings", margin.left, margin.top, plotWidth, plotHeight, 0, rightAxisTop);
+
+  const latestReadPointX = rowsAsc.length <= 1
+    ? margin.left + plotWidth / 2
+    : margin.left + plotWidth;
+  const latestReadPointY = margin.top + plotHeight - ((latestReads - 0) / Math.max(0.000001, leftAxisTop)) * plotHeight;
+  const latestReadLabelX = latestReadPointX - 6;
+  const latestReadLabelY = Math.max(margin.top + 10, latestReadPointY - 6);
+
+  const tickCount = Math.min(6, rowsAsc.length);
+  const ticks = [];
+  for (let i = 0; i < tickCount; i += 1) {
+    const idx = tickCount === 1
+      ? 0
+      : Math.round((i / (tickCount - 1)) * (rowsAsc.length - 1));
+    ticks.push(idx);
+  }
+  const uniqueTicks = Array.from(new Set(ticks));
+  const tickLabels = uniqueTicks.map((idx) => {
+    const x = rowsAsc.length <= 1
+      ? margin.left + plotWidth / 2
+      : margin.left + (idx / (rowsAsc.length - 1)) * plotWidth;
+    return `
+      <line x1="${x}" y1="${xAxisY}" x2="${x}" y2="${xAxisY + 6}" stroke="#666" stroke-width="1" />
+      <text x="${x}" y="${xAxisY + 20}" text-anchor="middle" font-size="11" fill="#444">${formatTrendDateLabel(rowsAsc[idx].capturedAt)}</text>
+    `;
+  }).join("");
+
+  state.trendChartSvgEl.innerHTML = `
+    <svg viewBox="0 0 ${svgWidth} ${svgHeight}" width="100%" height="100%" preserveAspectRatio="none" role="img" aria-label="Trend line chart for selected story">
+      <rect x="0" y="0" width="${svgWidth}" height="${svgHeight}" fill="#ffffff" />
+      <line x1="${margin.left}" y1="${xAxisY}" x2="${margin.left + plotWidth}" y2="${xAxisY}" stroke="#999" stroke-width="1" />
+      <line x1="${margin.left}" y1="${margin.top}" x2="${margin.left}" y2="${xAxisY}" stroke="#999" stroke-width="1" />
+      <line x1="${margin.left + plotWidth}" y1="${margin.top}" x2="${margin.left + plotWidth}" y2="${xAxisY}" stroke="#999" stroke-width="1" />
+
+      <text x="${margin.left}" y="${margin.top - 4}" text-anchor="start" font-size="12" font-weight="700" fill="${TREND_COLOR_VIEWS}">${formatNumber(leftAxisTop)}</text>
+      <text x="${margin.left + plotWidth}" y="${margin.top - 4}" text-anchor="end" font-size="12" font-weight="700" fill="${TREND_COLOR_EARNINGS}">${formatCurrency(rightAxisTop)}</text>
+
+      ${views.path ? `<path d="${views.path}" fill="none" stroke="${TREND_COLOR_VIEWS}" stroke-width="2" />` : ""}
+      ${views.path ? `<g fill="${TREND_COLOR_VIEWS}">${views.circles}</g>` : ""}
+
+      ${reads.path ? `<path d="${reads.path}" fill="none" stroke="${TREND_COLOR_READS}" stroke-width="2" />` : ""}
+      ${reads.path ? `<g fill="${TREND_COLOR_READS}">${reads.circles}</g>` : ""}
+      ${reads.path ? `<text x="${latestReadLabelX}" y="${latestReadLabelY}" text-anchor="end" font-size="10" font-weight="700" fill="${TREND_COLOR_READS}">${formatNumber(latestReads)}</text>` : ""}
+
+      ${earnings.path ? `<path d="${earnings.path}" fill="none" stroke="${TREND_COLOR_EARNINGS}" stroke-width="2" />` : ""}
+      ${earnings.path ? `<g fill="${TREND_COLOR_EARNINGS}">${earnings.circles}</g>` : ""}
+
+      ${tickLabels}
+
+      <text x="${margin.left + plotWidth / 2}" y="${svgHeight - 8}" text-anchor="middle" font-size="12" fill="#333">Days</text>
+    </svg>
+  `;
+}
+
+function showTrendChartOverlay(storyName) {
+  if (!state.trendChartOverlayEl || !state.trendChartTitleEl) {
+    return;
+  }
+
+  if (!storyName) {
+    setStatus("Select a story before showing trend chart.", true);
+    return;
+  }
+
+  state.trendChartTitleEl.textContent = `Trend Chart: ${formatStoryTitleForDisplay(storyName)}`;
+  positionTrendChartOverlay();
+  renderTrendChart(storyName);
+  state.trendChartOverlayEl.style.display = "block";
+
+  if (!state.trendChartOutsideClickHandler) {
+    state.trendChartOutsideClickHandler = (event) => {
+      if (!state.trendChartOverlayEl) {
+        return;
+      }
+      if (!state.trendChartOverlayEl.contains(event.target)) {
+        hideTrendChartOverlay();
+      }
+    };
+    document.addEventListener("mousedown", state.trendChartOutsideClickHandler, true);
+  }
+}
+
+function renderTrend(storyName) {
+  if (!state.trendContainerEl) {
+    return;
+  }
+
+  if (!storyName) {
+    state.trendContainerEl.innerHTML = "<div class='mw-empty'>Select a story to see trend history.</div>";
+    return;
+  }
+
+  const filteredRows = getTrendRows(storyName);
 
   if (!filteredRows.length) {
     state.trendContainerEl.innerHTML = "<div class='mw-empty'>No trend data for this story.</div>";
@@ -2107,6 +2316,9 @@ function togglePanel(show) {
   if (!panel) {
     return;
   }
+  if (!show) {
+    hideTrendChartOverlay();
+  }
   panel.style.display = show ? "block" : "none";
 }
 
@@ -2128,6 +2340,9 @@ function togglePanelExpanded() {
   const expanded = panel.classList.toggle("mw-expanded");
   button.textContent = expanded ? ">> Collapse" : "<< Expand";
   button.title = expanded ? "Collapse panel width" : "Expand panel width";
+  if (state.trendChartOverlayEl && state.trendChartOverlayEl.style.display === "block") {
+    positionTrendChartOverlay();
+  }
 }
 
 function refreshSnapshotSummary() {
@@ -2411,6 +2626,50 @@ function createPanelMarkup() {
         font-size: 12px;
         color: #111;
         display: none;
+      }
+      #${PANEL_IDS.panel} .mw-trend-chart-overlay {
+        position: absolute;
+        display: none;
+        background: #ffffff;
+        border: 1px solid #111;
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.15);
+        z-index: 6;
+        padding: 8px;
+      }
+      #${PANEL_IDS.panel} .mw-trend-chart-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      #${PANEL_IDS.panel} .mw-trend-chart-title {
+        font-weight: 700;
+        color: #1f2937;
+      }
+      #${PANEL_IDS.panel} .mw-trend-chart-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 6px;
+        font-size: 11px;
+      }
+      #${PANEL_IDS.panel} .mw-trend-chart-legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        color: #374151;
+      }
+      #${PANEL_IDS.panel} .mw-trend-chart-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        display: inline-block;
+      }
+      #${PANEL_IDS.panel} .mw-trend-chart-svg {
+        width: 100%;
+        height: calc(100% - 58px);
+        min-height: 120px;
       }
       #${PANEL_IDS.panel}.mw-expanded {
         width: min(92vw, 1180px);
@@ -2717,6 +2976,19 @@ function createPanelMarkup() {
         </div>
       </div>
 
+      <div id="mw-trend-chart-overlay" class="mw-trend-chart-overlay" aria-label="Trend chart overlay">
+        <div class="mw-trend-chart-head">
+          <div id="mw-trend-chart-title" class="mw-trend-chart-title">Trend Chart</div>
+          <button id="mw-trend-chart-close" type="button" aria-label="Close trend chart">Close</button>
+        </div>
+        <div class="mw-trend-chart-legend" aria-label="Trend chart legend">
+          <span class="mw-trend-chart-legend-item"><span class="mw-trend-chart-dot" style="background: ${TREND_COLOR_VIEWS};"></span>Views</span>
+          <span class="mw-trend-chart-legend-item"><span class="mw-trend-chart-dot" style="background: ${TREND_COLOR_READS};"></span>Reads</span>
+          <span class="mw-trend-chart-legend-item"><span class="mw-trend-chart-dot" style="background: ${TREND_COLOR_EARNINGS};"></span>Earnings</span>
+        </div>
+        <div id="mw-trend-chart-svg" class="mw-trend-chart-svg"></div>
+      </div>
+
       <div id="mw-status" class="mw-status">Ready.</div>
 
       <div class="mw-section" id="mw-daily-summary-section">
@@ -2778,7 +3050,7 @@ function createPanelMarkup() {
         </div>
       </div>
 
-      <div class="mw-section">
+      <div class="mw-section" id="mw-trend-section">
         <div class="mw-section-title">Trend Over Time</div>
         <div id="mw-trend-filters" class="mw-trend-filter-row" aria-label="Trend story starting-letter filters"></div>
         <div id="mw-trend-group-settings" class="mw-trend-group-settings" aria-label="Trend list size settings">
@@ -2843,6 +3115,11 @@ function wirePanelEvents() {
   state.trendFilterContainerEl = document.getElementById("mw-trend-filters");
   state.trendGroupSettingsEl = document.getElementById("mw-trend-group-settings");
   state.trendGroupMaxInputEl = document.getElementById("mw-trend-group-max");
+  state.trendSectionEl = document.getElementById("mw-trend-section");
+  state.trendChartOverlayEl = document.getElementById("mw-trend-chart-overlay");
+  state.trendChartTitleEl = document.getElementById("mw-trend-chart-title");
+  state.trendChartSvgEl = document.getElementById("mw-trend-chart-svg");
+  state.trendChartCloseBtnEl = document.getElementById("mw-trend-chart-close");
   state.trendContainerEl = document.getElementById("mw-trend");
   state.selectDeleteStory = document.getElementById("mw-delete-story");
   state.selectDeleteTimestamp = document.getElementById("mw-delete-timestamp");
@@ -2878,6 +3155,17 @@ function wirePanelEvents() {
   launcher.addEventListener("click", () => togglePanel(!isPanelVisible()));
   document.getElementById("mw-toggle-panel-size").addEventListener("click", () => togglePanelExpanded());
   document.getElementById("mw-close-panel").addEventListener("click", () => togglePanel(false));
+  panel.addEventListener("scroll", () => {
+    if (state.trendChartOverlayEl && state.trendChartOverlayEl.style.display === "block") {
+      positionTrendChartOverlay();
+    }
+  });
+
+  if (state.trendChartCloseBtnEl) {
+    state.trendChartCloseBtnEl.addEventListener("click", () => {
+      hideTrendChartOverlay();
+    });
+  }
 
   [
     state.dailyFilterPresentationsEl,
@@ -3034,7 +3322,9 @@ function wirePanelEvents() {
       }
       setStatus("Trend group size settings revealed.");
     }
-    renderTrend(state.selectTrendStory.value);
+    const selectedStory = state.selectTrendStory ? state.selectTrendStory.value : "";
+    renderTrend(selectedStory);
+    showTrendChartOverlay(selectedStory);
   });
 
   document.getElementById("mw-trend-group-apply").addEventListener("click", async () => {

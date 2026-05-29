@@ -129,6 +129,15 @@ Story presence rules:
 - Rows are sorted most recent first.
 - For **today**, multiple snapshots may appear.
 - For any **earlier day**, only that day's most recent snapshot is shown.
+- `Show Trend` also opens an SVG line chart overlay for the selected story:
+	- Views line: orange
+	- Reads line: blue
+	- Earnings line: green
+	- X-axis is days and lines connect point-to-point directly (snapshot gaps are not expanded with empty points).
+- The chart overlay spans the panel area between the panel header and the Trend section.
+- Close behavior:
+	- Click the chart `Close` button, or
+	- Click anywhere outside the chart overlay.
 - If total stories exceed the trend picker max group size (default `100`), story selection is split into A-Z filter groups.
 	- Each letter is shown.
 	- Empty letters are disabled.
