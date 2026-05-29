@@ -1,5 +1,5 @@
 /*
-  Medium Reader Stats Info content script
+  Medium Writer Success Stats content script
 
   Instructions:
   - Load this script on https://medium.com/me/stats only.
@@ -1487,11 +1487,11 @@ function createPanelMarkup() {
       }
     </style>
 
-    <button id="${PANEL_IDS.launcher}" title="Open Medium Stats panel">MW</button>
+    <button id="${PANEL_IDS.launcher}" title="Open Medium Stats panel">MWS</button>
 
     <aside id="${PANEL_IDS.panel}" aria-live="polite">
       <div class="mw-row mw-panel-header" style="justify-content: space-between; align-items: center;">
-        <div class="mw-title">Medium Reader Stats</div>
+        <div class="mw-title">Medium Writer Success Stats</div>
         <div class="mw-row" style="margin-bottom: 0;">
           <button id="mw-toggle-panel-size" type="button" title="Expand panel width">Expand</button>
           <button id="mw-close-panel" type="button">Close</button>
@@ -1866,5 +1866,5 @@ async function init() {
 
 init().catch((err) => {
   const msg = err && err.message ? err.message : "Initialization failed.";
-  console.error("Medium Reader Stats init error:", msg);
+  console.error("Medium Writer Success Stats init error:", msg);
 });
