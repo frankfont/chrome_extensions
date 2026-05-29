@@ -1329,14 +1329,14 @@ function updateLauncherSignal() {
     state.launcherEl.style.background = "#b7e4c7";
     state.launcherEl.style.borderColor = "#2d6a4f";
     state.launcherEl.style.color = "#1b4332";
-    state.launcherEl.title = "Open Medium Stats panel (reads/earnings increased since prior day)";
+    state.launcherEl.title = "Open Writer Success Stats for Medium (reads/earnings increased since prior day)";
     return;
   }
 
   state.launcherEl.style.background = "#fff";
   state.launcherEl.style.borderColor = "#111";
   state.launcherEl.style.color = "#111";
-  state.launcherEl.title = "Open Medium Stats panel";
+  state.launcherEl.title = "Open Writer Success Stats for Medium";
 }
 
 function getSortIndicator(sortKey) {
@@ -2473,7 +2473,7 @@ function createPanelMarkup() {
       }
     </style>
 
-    <button id="${PANEL_IDS.launcher}" title="Open Writer Success Stats for Medium panel">WSM</button>
+    <button id="${PANEL_IDS.launcher}" title="Open Writer Success Stats for Medium">WSM</button>
 
     <aside id="${PANEL_IDS.panel}" aria-live="polite">
       <div class="mw-row mw-panel-header" style="justify-content: space-between; align-items: center;">
