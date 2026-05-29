@@ -59,6 +59,8 @@ const state = {
   compareFilterReadsEl: null,
   compareFilterEarningsEl: null,
   diffContainerEl: null,
+  auditSectionEl: null,
+  auditContainerEl: null,
   trendContainerEl: null,
   lastSeenUrl: "",
   routeCheckTimer: null,
@@ -66,6 +68,13 @@ const state = {
   keyboardShortcutsWired: false,
   runtimeMessagesWired: false
 };
+
+function setAuditSectionVisible(visible) {
+  if (!state.auditSectionEl) {
+    return;
+  }
+  state.auditSectionEl.style.display = visible ? "block" : "none";
+}
 
 function isTargetPage() {
   return window.location.href.startsWith(TARGET_URL_PREFIX);
@@ -279,6 +288,11 @@ function extractRowsFromTable() {
   const rows = Array.from(document.querySelectorAll("table tbody tr, table tr"));
 
   rows.forEach((row) => {
+    // Ignore rows rendered inside this extension panel (diff/audit/trend tables).
+    if (row.closest(`#${PANEL_IDS.wrapper}`)) {
+      return;
+    }
+
     const cells = Array.from(row.querySelectorAll("td, th"))
       .map((cell) => sanitizeText(cell.textContent))
       .filter(Boolean);
@@ -296,6 +310,14 @@ function extractRowsFromTable() {
     const storyLink = row.querySelector("a[href]");
     const mediumUrl = storyLink ? storyLink.href : "";
     const storyId = getStoryIdFromUrl(mediumUrl);
+
+    // Require a Medium story link to avoid parsing unrelated page tables.
+    const hasMediumStoryLink =
+      !!storyLink &&
+      (mediumUrl.includes("medium.com/me/stats/post/") || mediumUrl.includes("medium.com/p/") || mediumUrl.includes("/p/"));
+    if (!hasMediumStoryLink) {
+      return;
+    }
 
     if (!storyName || (views === null && reads === null && earnings === null)) {
       return;
@@ -362,6 +384,34 @@ function hasAnyStatsMetricValueOnPage() {
   }
 
   return false;
+}
+
+function validateSnapshotIntegrity(rows) {
+  if (!Array.isArray(rows) || !rows.length) {
+    return "No story rows found to validate.";
+  }
+
+  const linkedRows = rows.filter((row) => !!row.mediumUrl && row.mediumUrl.includes("medium.com"));
+  const linkedRatio = linkedRows.length / rows.length;
+  if (linkedRatio < 0.9) {
+    return "Snapshot integrity check failed: too many rows are missing Medium story links.";
+  }
+
+  const presentationRows = rows.filter((row) => row.presentations !== null && row.presentations !== undefined);
+  if (!presentationRows.length) {
+    return "Snapshot integrity check failed: Presentations values were not found on this page state.";
+  }
+
+  const comparableRows = rows.filter((row) => row.views !== null && row.views !== undefined && row.reads !== null && row.reads !== undefined);
+  if (comparableRows.length >= 5) {
+    const sameViewReadRows = comparableRows.filter((row) => Math.abs(row.views - row.reads) <= CHANGE_EPSILON);
+    const sameRatio = sameViewReadRows.length / comparableRows.length;
+    if (sameRatio >= 0.8) {
+      return "Snapshot integrity check failed: Reads and Views are identical for most rows, which indicates a malformed capture.";
+    }
+  }
+
+  return null;
 }
 
 function findLatestSnapshot() {
@@ -497,6 +547,11 @@ async function captureSnapshot(mode) {
   const rows = extractStoryRows();
   if (!rows.length) {
     throw new Error("No story rows found. Confirm you are logged into Medium and your stats page is loaded.");
+  }
+
+  const integrityError = validateSnapshotIntegrity(rows);
+  if (integrityError) {
+    throw new Error(`${integrityError} Snapshot not saved.`);
   }
 
   const previousSnapshot = findLatestSnapshot();
@@ -856,11 +911,9 @@ function renderDiff(baseId, targetId) {
       <td>${formatNumber(row.viewsA)}</td>
       <td>${formatNumber(row.viewsB)}</td>
       <td class="${toneClass(row.viewsDelta)}">${formatSignedNumber(row.viewsDelta)}</td>
-      <td class="${toneClass(row.viewsPct)}">${formatSignedPercent(row.viewsPct)}</td>
       <td>${formatNumber(row.readsA)}</td>
       <td>${formatNumber(row.readsB)}</td>
       <td class="${toneClass(row.readsDelta)}">${formatSignedNumber(row.readsDelta)}</td>
-      <td class="${toneClass(row.readsPct)}">${formatSignedPercent(row.readsPct)}</td>
       <td>${formatCurrency(row.earningsA)}</td>
       <td>${formatCurrency(row.earningsB)}</td>
       <td class="${toneClass(row.earningsDelta)}">${formatSignedCurrency(row.earningsDelta)}</td>
@@ -879,11 +932,9 @@ function renderDiff(baseId, targetId) {
             <th>Views A</th>
             <th>Views B</th>
             <th>Views Δ</th>
-            <th>Views %</th>
             <th>Reads A</th>
             <th>Reads B</th>
             <th>Reads Δ</th>
-            <th>Reads %</th>
             <th>Earnings A</th>
             <th>Earnings B</th>
             <th>Earnings Δ</th>
@@ -891,11 +942,143 @@ function renderDiff(baseId, targetId) {
           </tr>
         </thead>
         <tbody>
-          ${tableRows || "<tr><td colspan='14'>No comparable rows found.</td></tr>"}
+          ${tableRows || "<tr><td colspan='12'>No comparable rows found.</td></tr>"}
         </tbody>
       </table>
     </div>
   `;
+}
+
+function renderSnapshotAudit(baseId, targetId) {
+  if (!state.auditContainerEl) {
+    return;
+  }
+
+  const baseSnapshot = getSnapshotById(baseId);
+  const targetSnapshot = getSnapshotById(targetId);
+  if (!baseSnapshot || !targetSnapshot) {
+    state.auditContainerEl.innerHTML = "<div class='mw-empty'>Select two snapshots to inspect raw stored values.</div>";
+    return;
+  }
+
+  const rows = computeDiffRows(baseSnapshot, targetSnapshot)
+    .filter((row) => row.status === "existing")
+    .sort((a, b) => a.storyName.localeCompare(b.storyName));
+
+  const suspicious = rows.filter((row) => {
+    const negativeReads = row.readsDelta !== null && row.readsDelta < -CHANGE_EPSILON;
+    const readsEqualsViewsInTarget =
+      row.viewsB !== null && row.readsB !== null && Math.abs(row.viewsB - row.readsB) <= CHANGE_EPSILON;
+    const earningsDroppedToZero =
+      row.earningsA !== null && row.earningsA > CHANGE_EPSILON && row.earningsB !== null && Math.abs(row.earningsB) <= CHANGE_EPSILON;
+    return negativeReads || (readsEqualsViewsInTarget && earningsDroppedToZero);
+  });
+
+  const header = `
+    <div class="mw-summary-head">Snapshot Audit: ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>
+    <div class="mw-summary-count">Existing stories: ${rows.length}. Suspicious rows: ${suspicious.length}.</div>
+  `;
+
+  if (!rows.length) {
+    state.auditContainerEl.innerHTML = `${header}<div class='mw-empty'>No overlapping stories between these snapshots.</div>`;
+    return;
+  }
+
+  const suspiciousRowsHtml = suspicious.map((row) => `
+    <tr>
+      <td>${row.storyName}</td>
+      <td>${formatNumber(row.viewsA)}</td>
+      <td>${formatNumber(row.viewsB)}</td>
+      <td>${formatNumber(row.readsA)}</td>
+      <td>${formatNumber(row.readsB)}</td>
+      <td class="${toneClass(row.readsDelta)}">${formatSignedNumber(row.readsDelta)}</td>
+      <td>${formatCurrency(row.earningsA)}</td>
+      <td>${formatCurrency(row.earningsB)}</td>
+      <td class="${toneClass(row.earningsDelta)}">${formatSignedCurrency(row.earningsDelta)}</td>
+    </tr>
+  `).join("");
+
+  state.auditContainerEl.innerHTML = `
+    ${header}
+    ${suspicious.length ? "" : "<div class='mw-empty'>No suspicious row patterns detected for this snapshot pair.</div>"}
+    ${
+      suspicious.length
+        ? `
+      <div class="mw-table-wrap">
+        <table class="mw-table">
+          <thead>
+            <tr>
+              <th>Story</th>
+              <th>Views A</th>
+              <th>Views B</th>
+              <th>Reads A</th>
+              <th>Reads B</th>
+              <th>Reads Delta</th>
+              <th>Earnings A</th>
+              <th>Earnings B</th>
+              <th>Earnings Delta</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${suspiciousRowsHtml}
+          </tbody>
+        </table>
+      </div>
+    `
+        : ""
+    }
+  `;
+}
+
+function buildSnapshotExportPayload(baseId, targetId) {
+  const baseSnapshot = getSnapshotById(baseId);
+  const targetSnapshot = getSnapshotById(targetId);
+  if (!baseSnapshot || !targetSnapshot) {
+    return null;
+  }
+
+  return {
+    exportedAt: nowIso(),
+    baseSnapshotId: baseId,
+    targetSnapshotId: targetId,
+    baseSnapshot,
+    targetSnapshot
+  };
+}
+
+async function exportSelectedSnapshotsJson(baseId, targetId) {
+  const payload = buildSnapshotExportPayload(baseId, targetId);
+  if (!payload) {
+    throw new Error("Select valid A/B snapshots before exporting.");
+  }
+
+  const json = JSON.stringify(payload, null, 2);
+  const outputEl = document.getElementById("mw-export-json-output");
+  if (outputEl) {
+    outputEl.value = json;
+  }
+
+  let copied = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(json);
+      copied = true;
+    } catch {
+      copied = false;
+    }
+  }
+
+  if (!copied && outputEl) {
+    outputEl.focus();
+    outputEl.select();
+  }
+
+  setStatus(
+    copied
+      ? "A/B snapshot JSON exported and copied to clipboard."
+      : "A/B snapshot JSON exported. Clipboard unavailable; copy from the text box.",
+    false
+  );
 }
 
 function getAllStoryNames() {
@@ -1193,6 +1376,15 @@ function createPanelMarkup() {
         font-weight: 700;
         margin-bottom: 6px;
       }
+      #${PANEL_IDS.panel} .mw-panel-header {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: #dff3e4;
+        padding-bottom: 6px;
+        margin-bottom: 6px;
+        border-bottom: 1px solid #8dc5a1;
+      }
       #${PANEL_IDS.panel} .mw-table-wrap {
         overflow: auto;
         max-height: 200px;
@@ -1275,12 +1467,22 @@ function createPanelMarkup() {
         gap: 4px;
         cursor: pointer;
       }
+      #${PANEL_IDS.panel} .mw-export-output {
+        width: 100%;
+        min-height: 140px;
+        border: 1px solid #111;
+        margin-top: 8px;
+        padding: 6px;
+        font-size: 11px;
+        font-family: Menlo, Monaco, Consolas, monospace;
+        resize: vertical;
+      }
     </style>
 
     <button id="${PANEL_IDS.launcher}" title="Open Medium Stats panel">MW</button>
 
     <aside id="${PANEL_IDS.panel}" aria-live="polite">
-      <div class="mw-row" style="justify-content: space-between; align-items: center;">
+      <div class="mw-row mw-panel-header" style="justify-content: space-between; align-items: center;">
         <div class="mw-title">Medium Reader Stats</div>
         <div class="mw-row" style="margin-bottom: 0;">
           <button id="mw-toggle-panel-size" type="button" title="Expand panel width">Expand</button>
@@ -1325,8 +1527,14 @@ function createPanelMarkup() {
           <select id="mw-compare-a"></select>
           <select id="mw-compare-b"></select>
           <button id="mw-compare-run" type="button">Compare</button>
+          <button id="mw-audit-compare" type="button">Audit Snapshot Pair</button>
+          <button id="mw-export-compare-json" type="button">Export A/B JSON</button>
         </div>
         <div id="mw-diff"></div>
+        <div id="mw-audit-export-section" style="display: none; margin-top: 8px;">
+          <div id="mw-audit"></div>
+          <textarea id="mw-export-json-output" class="mw-export-output" readonly placeholder="Exported A/B snapshot JSON appears here."></textarea>
+        </div>
       </div>
 
       <div class="mw-section">
@@ -1378,10 +1586,13 @@ function wirePanelEvents() {
   state.selectCompareA = document.getElementById("mw-compare-a");
   state.selectCompareB = document.getElementById("mw-compare-b");
   state.diffContainerEl = document.getElementById("mw-diff");
+  state.auditSectionEl = document.getElementById("mw-audit-export-section");
+  state.auditContainerEl = document.getElementById("mw-audit");
   state.selectTrendStory = document.getElementById("mw-trend-story");
   state.trendContainerEl = document.getElementById("mw-trend");
   state.selectDeleteStory = document.getElementById("mw-delete-story");
   state.selectDeleteTimestamp = document.getElementById("mw-delete-timestamp");
+  setAuditSectionVisible(false);
 
   launcher.addEventListener("click", () => togglePanel(panel.style.display === "none"));
   document.getElementById("mw-toggle-panel-size").addEventListener("click", () => togglePanelExpanded());
@@ -1444,6 +1655,26 @@ function wirePanelEvents() {
     const b = state.selectCompareB.value;
     renderDiff(a, b);
     setStatus("Comparison rendered.");
+  });
+
+  document.getElementById("mw-audit-compare").addEventListener("click", () => {
+    const a = state.selectCompareA.value;
+    const b = state.selectCompareB.value;
+    setAuditSectionVisible(true);
+    renderSnapshotAudit(a, b);
+    setStatus("Snapshot audit rendered.");
+  });
+
+  document.getElementById("mw-export-compare-json").addEventListener("click", async () => {
+    try {
+      const a = state.selectCompareA.value;
+      const b = state.selectCompareB.value;
+      setAuditSectionVisible(true);
+      renderSnapshotAudit(a, b);
+      await exportSelectedSnapshotsJson(a, b);
+    } catch (err) {
+      setStatus(err.message || "Export failed.", true);
+    }
   });
 
   document.getElementById("mw-trend-run").addEventListener("click", () => {
