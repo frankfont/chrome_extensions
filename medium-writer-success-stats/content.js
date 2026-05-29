@@ -76,7 +76,10 @@ const state = {
   keyboardShortcutsWired: false,
   runtimeMessagesWired: false,
   transferSectionEl: null,
-  compareRenderTimer: null
+  deleteSectionEl: null,
+  compareRenderTimer: null,
+  compareSortKey: "",
+  compareSortDirection: "asc"
 };
 
 function setAuditSectionVisible(visible) {
@@ -91,6 +94,13 @@ function setTransferSectionVisible(visible) {
     return;
   }
   state.transferSectionEl.style.display = visible ? "block" : "none";
+}
+
+function setDeleteSectionVisible(visible) {
+  if (!state.deleteSectionEl) {
+    return;
+  }
+  state.deleteSectionEl.style.display = visible ? "block" : "none";
 }
 
 function isTargetPage() {
@@ -265,8 +275,27 @@ function getStoryIdFromUrl(url) {
   if (!url) {
     return "";
   }
-  const match = String(url).match(/\/p\/([a-zA-Z0-9]+)/);
+  const match = String(url).match(/\/(?:me\/stats\/post|p)\/([a-zA-Z0-9]+)/);
   return match ? match[1] : "";
+}
+
+function normalizeMediumStoryUrl(url) {
+  const rawUrl = String(url || "").trim();
+  if (!rawUrl) {
+    return "";
+  }
+
+  const storyId = getStoryIdFromUrl(rawUrl);
+  if (storyId) {
+    return `https://medium.com/me/stats/post/${storyId}`;
+  }
+
+  try {
+    const parsed = new URL(rawUrl);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return rawUrl;
+  }
 }
 
 function sanitizeText(text) {
@@ -481,13 +510,14 @@ function extractRowsFromTable() {
     const earnings = parseCurrency(cells[4]);
 
     const storyLink = row.querySelector("a[href]");
-    const mediumUrl = storyLink ? storyLink.href : "";
+    const rawMediumUrl = storyLink ? storyLink.href : "";
+    const mediumUrl = normalizeMediumStoryUrl(rawMediumUrl);
     const storyId = getStoryIdFromUrl(mediumUrl);
 
     // Require a Medium story link to avoid parsing unrelated page tables.
     const hasMediumStoryLink =
       !!storyLink &&
-      (mediumUrl.includes("medium.com/me/stats/post/") || mediumUrl.includes("medium.com/p/") || mediumUrl.includes("/p/"));
+      (rawMediumUrl.includes("medium.com/me/stats/post/") || rawMediumUrl.includes("medium.com/p/") || rawMediumUrl.includes("/p/"));
     if (!hasMediumStoryLink) {
       return;
     }
@@ -644,7 +674,7 @@ function updateSmartCaptureHint() {
   }
 
   const decision = getSmartCaptureDecision();
-  state.smartCaptureHintEl.textContent = `Mode: Smart -> ${decision.modeLabel} (${decision.reason})`;
+  state.smartCaptureHintEl.textContent = `Mode: Smart -> ${decision.modeLabel} (${decision.reason}). Shift+Click: force Full. Option+Click: force Delta.`;
 }
 
 function isSparseSnapshot(snapshot) {
@@ -1309,6 +1339,80 @@ function updateLauncherSignal() {
   state.launcherEl.title = "Open Medium Stats panel";
 }
 
+function getSortIndicator(sortKey) {
+  if (state.compareSortKey !== sortKey) {
+    return "";
+  }
+  return state.compareSortDirection === "asc" ? " ▲" : " ▼";
+}
+
+function compareNullableNumbers(a, b, direction) {
+  const aMissing = a === null || a === undefined || Number.isNaN(a);
+  const bMissing = b === null || b === undefined || Number.isNaN(b);
+
+  if (aMissing && bMissing) {
+    return 0;
+  }
+  if (aMissing) {
+    return 1;
+  }
+  if (bMissing) {
+    return -1;
+  }
+
+  if (a === b) {
+    return 0;
+  }
+
+  if (direction === "asc") {
+    return a < b ? -1 : 1;
+  }
+  return a > b ? -1 : 1;
+}
+
+function sortCompareRows(rows) {
+  if (!state.compareSortKey) {
+    return rows;
+  }
+
+  const key = state.compareSortKey;
+  const direction = state.compareSortDirection;
+
+  return [...rows].sort((a, b) => {
+    if (key === "storyName" || key === "status") {
+      const left = String(a[key] || "");
+      const right = String(b[key] || "");
+      const cmp = left.localeCompare(right);
+      if (cmp === 0) {
+        return 0;
+      }
+      return direction === "asc" ? cmp : -cmp;
+    }
+
+    const numericCmp = compareNullableNumbers(a[key], b[key], direction);
+    if (numericCmp !== 0) {
+      return numericCmp;
+    }
+
+    return String(a.storyName || "").localeCompare(String(b.storyName || ""));
+  });
+}
+
+function toggleCompareSort(sortKey) {
+  if (!sortKey) {
+    return;
+  }
+
+  if (state.compareSortKey === sortKey) {
+    state.compareSortDirection = state.compareSortDirection === "asc" ? "desc" : "asc";
+  } else {
+    state.compareSortKey = sortKey;
+    state.compareSortDirection = sortKey === "storyName" || sortKey === "status" ? "asc" : "desc";
+  }
+
+  scheduleCompareRender();
+}
+
 function scheduleCompareRender() {
   if (state.compareRenderTimer) {
     window.clearTimeout(state.compareRenderTimer);
@@ -1338,8 +1442,9 @@ function renderDiff(baseId, targetId) {
     return;
   }
 
-  const rows = computeDiffRows(baseSnapshot, targetSnapshot)
+  const filteredRows = computeDiffRows(baseSnapshot, targetSnapshot)
     .filter((row) => hasAnyTrackedChange(row, metricFilters));
+  const rows = sortCompareRows(filteredRows);
 
   const totals = {
     presentations: 0,
@@ -1409,17 +1514,17 @@ function renderDiff(baseId, targetId) {
       <table class="mw-table">
         <thead>
           <tr>
-            <th>Story</th>
-            <th>Status</th>
-            <th>Views A</th>
-            <th>Views B</th>
-            <th>Views Δ</th>
-            <th>Reads A</th>
-            <th>Reads B</th>
-            <th>Reads Δ</th>
-            <th>Earnings A</th>
-            <th>Earnings B</th>
-            <th>Earnings Δ</th>
+            <th class="mw-sortable" data-sort-key="storyName">Story${getSortIndicator("storyName")}</th>
+            <th class="mw-sortable" data-sort-key="status">Status${getSortIndicator("status")}</th>
+            <th class="mw-sortable" data-sort-key="viewsA">Views A${getSortIndicator("viewsA")}</th>
+            <th class="mw-sortable" data-sort-key="viewsB">Views B${getSortIndicator("viewsB")}</th>
+            <th class="mw-sortable" data-sort-key="viewsDelta">Views Δ${getSortIndicator("viewsDelta")}</th>
+            <th class="mw-sortable" data-sort-key="readsA">Reads A${getSortIndicator("readsA")}</th>
+            <th class="mw-sortable" data-sort-key="readsB">Reads B${getSortIndicator("readsB")}</th>
+            <th class="mw-sortable" data-sort-key="readsDelta">Reads Δ${getSortIndicator("readsDelta")}</th>
+            <th class="mw-sortable" data-sort-key="earningsA">Earnings A${getSortIndicator("earningsA")}</th>
+            <th class="mw-sortable" data-sort-key="earningsB">Earnings B${getSortIndicator("earningsB")}</th>
+            <th class="mw-sortable" data-sort-key="earningsDelta">Earnings Δ${getSortIndicator("earningsDelta")}</th>
           </tr>
         </thead>
         <tbody>
@@ -2235,6 +2340,13 @@ function createPanelMarkup() {
         padding: 4px;
         white-space: nowrap;
       }
+      #${PANEL_IDS.panel} .mw-table th.mw-sortable {
+        cursor: pointer;
+        user-select: none;
+      }
+      #${PANEL_IDS.panel} .mw-table th.mw-sortable:hover {
+        background: #f5f8f6;
+      }
       #${PANEL_IDS.panel} .mw-empty {
         color: #666;
       }
@@ -2312,6 +2424,17 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} .mw-change-meta {
         color: #555;
         margin: 2px 0 4px;
+      }
+      #${PANEL_IDS.panel} .mw-danger-title {
+        color: #8f1111;
+      }
+      #${PANEL_IDS.panel} .mw-danger-warning {
+        border: 1px solid #c94b16;
+        background: #fff4eb;
+        color: #8a2f0a;
+        padding: 6px 8px;
+        margin: 0 0 8px;
+        font-weight: 700;
       }
       #${PANEL_IDS.panel} .mw-warning {
         border: 1px solid #c94b16;
@@ -2415,8 +2538,8 @@ function createPanelMarkup() {
             <select id="mw-compare-b-day"></select>
             <select id="mw-compare-b"></select>
           <button id="mw-run-default-compare" type="button">Run Default Comparison</button>
-          <button id="mw-audit-compare" type="button">Audit Snapshot Pair</button>
-          <button id="mw-export-compare-json" type="button">Export A/B JSON</button>
+          <button id="mw-audit-compare" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Audit Snapshot Pair</button>
+          <button id="mw-export-compare-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Export A/B JSON</button>
         </div>
         <div id="mw-diff"></div>
         <div id="mw-audit-export-section" style="display: none; margin-top: 8px;">
@@ -2434,8 +2557,9 @@ function createPanelMarkup() {
         <div id="mw-trend"></div>
       </div>
 
-      <div class="mw-section">
-        <div class="mw-section-title">Delete Data</div>
+      <div class="mw-section" id="mw-delete-section" style="display: none;">
+        <div class="mw-section-title mw-danger-title">Delete Data</div>
+        <div class="mw-danger-warning">Warning: deleted snapshots and deleted story data cannot be recovered.</div>
         <!-- Delete Story controls are intentionally hidden for now; keep markup for future restore. -->
         <div class="mw-row" style="display: none;" aria-hidden="true">
           <select id="mw-delete-story"></select>
@@ -2485,8 +2609,27 @@ function wirePanelEvents() {
   state.selectDeleteTimestamp = document.getElementById("mw-delete-timestamp");
   state.smartCaptureHintEl = document.getElementById("mw-smart-capture-hint");
   state.transferSectionEl = document.getElementById("mw-transfer-section");
+  state.deleteSectionEl = document.getElementById("mw-delete-section");
   setAuditSectionVisible(false);
   setTransferSectionVisible(false);
+  setDeleteSectionVisible(false);
+
+  if (state.diffContainerEl) {
+    state.diffContainerEl.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      const sortableHeader = target.closest("th[data-sort-key]");
+      if (!sortableHeader) {
+        return;
+      }
+
+      const sortKey = sortableHeader.getAttribute("data-sort-key") || "";
+      toggleCompareSort(sortKey);
+    });
+  }
 
   launcher.addEventListener("click", () => togglePanel(!isPanelVisible()));
   document.getElementById("mw-toggle-panel-size").addEventListener("click", () => togglePanelExpanded());
@@ -2520,21 +2663,43 @@ function wirePanelEvents() {
     });
   });
 
-  document.getElementById("mw-manual-snapshot-smart").addEventListener("click", async () => {
+  document.getElementById("mw-manual-snapshot-smart").addEventListener("click", async (event) => {
     try {
-      const decision = getSmartCaptureDecision();
+      const forceFull = !!event.shiftKey;
+      const forceDelta = !!event.altKey;
+      let decision;
+
+      if (forceFull) {
+        decision = { mode: "full" };
+      } else if (forceDelta) {
+        decision = { mode: "sparse" };
+      } else {
+        decision = getSmartCaptureDecision();
+      }
+
       await captureSnapshot("manual", decision.mode, "mw-manual-snapshot-smart");
     } catch (err) {
       setStatus(err.message || "Manual snapshot failed.", true);
     }
   });
 
-  document.getElementById("mw-run-default-compare").addEventListener("click", () => {
+  document.getElementById("mw-run-default-compare").addEventListener("click", (event) => {
     const [a, b] = findCompareDatesDefault();
     if (!a || !b) {
       setStatus("Need at least two snapshots for default comparison.", true);
       return;
     }
+
+    const auditButton = document.getElementById("mw-audit-compare");
+    const exportButton = document.getElementById("mw-export-compare-json");
+    if (auditButton) {
+      auditButton.style.display = event.shiftKey ? "" : "none";
+    }
+    if (exportButton) {
+      exportButton.style.display = event.shiftKey ? "" : "none";
+    }
+    setDeleteSectionVisible(!!event.shiftKey);
+
     refreshSegmentedCompareSelectors(a, b);
     renderDiff(a, b);
     setStatus("Default comparison rendered.");

@@ -29,6 +29,8 @@ This extension stores values as text and numbers. It does not take screenshots.
 - Manual snapshot: user triggers one `Capture Snapshot` button.
 	- Smart mode chooses delta when a recent snapshot exists (within 5 days).
 	- Smart mode chooses full when no prior snapshot exists or no recent snapshot exists.
+	- `Shift+Click` on `Capture Snapshot` forces a full snapshot.
+	- `Option+Click` on `Capture Snapshot` forces a delta snapshot.
 - Multiple manual snapshots per day are allowed.
 - Hybrid storage model:
 	- First snapshot of each day is stored as a full snapshot.
@@ -73,6 +75,10 @@ The **Compare Any Two** area supports manual picker-based comparisons and a defa
 - `Run Default Comparison` logic:
 	- Base snapshot (A): **earliest available snapshot from the earliest date**.
 	- Target snapshot (B): **latest available snapshot from the latest date**.
+
+- Hidden advanced controls:
+	- Hold `Shift` while clicking `Run Default Comparison` to reveal `Audit Snapshot Pair`, `Export A/B JSON`, and the `Delete Data` section.
+	- Click `Run Default Comparison` without `Shift` to hide those advanced controls again.
 
 This gives a full-range comparison across all available saved history.
 
