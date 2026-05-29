@@ -298,7 +298,23 @@ function setStatus(message, isError = false) {
     return;
   }
   state.statusEl.textContent = message;
+  state.statusEl.classList.remove("mw-status-busy");
   state.statusEl.style.color = isError ? "#8f1111" : "#0f5132";
+}
+
+function setSnapshotCaptureUiBusy(isBusy) {
+  const button = document.getElementById("mw-manual-snapshot");
+  if (!button) {
+    return;
+  }
+  button.disabled = !!isBusy;
+  button.classList.toggle("mw-busy-action", !!isBusy);
+  button.textContent = isBusy ? "Creating snapshot now..." : "Capture Manual Snapshot";
+
+  if (state.statusEl) {
+    state.statusEl.classList.toggle("mw-status-busy", !!isBusy);
+    state.statusEl.style.color = isBusy ? "#7a2f00" : "#0f5132";
+  }
 }
 
 function countPotentialRows() {
@@ -582,39 +598,44 @@ function startRouteWatcher() {
 
 async function captureSnapshot(mode) {
   ensureTargetPage();
-  setStatus("Capturing snapshot...");
+  setStatus("Creating snapshot now...");
+  setSnapshotCaptureUiBusy(true);
 
-  await autoScrollForDataRows();
+  try {
+    await autoScrollForDataRows();
 
-  if (!hasAnyStatsMetricValueOnPage()) {
-    throw new Error("Snapshot not saved: stats values (Presentations, Views, Reads, Earnings) are not visible on the page yet.");
+    if (!hasAnyStatsMetricValueOnPage()) {
+      throw new Error("Snapshot not saved: stats values (Presentations, Views, Reads, Earnings) are not visible on the page yet.");
+    }
+
+    const rows = extractStoryRows();
+    if (!rows.length) {
+      throw new Error("No story rows found. Confirm you are logged into Medium and your stats page is loaded.");
+    }
+
+    const integrityError = validateSnapshotIntegrity(rows);
+    if (integrityError) {
+      throw new Error(`${integrityError} Snapshot not saved.`);
+    }
+
+    const previousSnapshot = findLatestSnapshot();
+    const readDecreases = findReadDecreasesComparedToSnapshot(rows, previousSnapshot);
+    if (readDecreases.length) {
+      const sample = readDecreases[0];
+      throw new Error(
+        `Snapshot not saved: Reads decreased for ${readDecreases.length} story(s) vs previous snapshot (example: ${formatStoryTitleForDisplay(sample.storyName)} ${formatNumber(sample.previousReads)} -> ${formatNumber(sample.currentReads)}). Refresh stats and ensure the same Medium date filter before capturing.`
+      );
+    }
+
+    const snapshot = buildSnapshot(rows, mode);
+    state.snapshots.push(snapshot);
+    state.snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+    await persistSnapshots();
+    refreshPanelData();
+    setStatus(`Snapshot captured: ${snapshot.stories.length} stories (${mode}).`);
+  } finally {
+    setSnapshotCaptureUiBusy(false);
   }
-
-  const rows = extractStoryRows();
-  if (!rows.length) {
-    throw new Error("No story rows found. Confirm you are logged into Medium and your stats page is loaded.");
-  }
-
-  const integrityError = validateSnapshotIntegrity(rows);
-  if (integrityError) {
-    throw new Error(`${integrityError} Snapshot not saved.`);
-  }
-
-  const previousSnapshot = findLatestSnapshot();
-  const readDecreases = findReadDecreasesComparedToSnapshot(rows, previousSnapshot);
-  if (readDecreases.length) {
-    const sample = readDecreases[0];
-    throw new Error(
-      `Snapshot not saved: Reads decreased for ${readDecreases.length} story(s) vs previous snapshot (example: ${formatStoryTitleForDisplay(sample.storyName)} ${formatNumber(sample.previousReads)} -> ${formatNumber(sample.currentReads)}). Refresh stats and ensure the same Medium date filter before capturing.`
-    );
-  }
-
-  const snapshot = buildSnapshot(rows, mode);
-  state.snapshots.push(snapshot);
-  state.snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
-  await persistSnapshots();
-  refreshPanelData();
-  setStatus(`Snapshot captured: ${snapshot.stories.length} stories (${mode}).`);
 }
 
 function getSnapshotById(id) {
@@ -1610,6 +1631,13 @@ function createPanelMarkup() {
         padding: 4px 6px;
         font-size: 12px;
       }
+      #${PANEL_IDS.panel} .mw-busy-action {
+        background: #ffe8cc;
+        border-color: #cc7a00;
+        color: #7a2f00;
+        font-weight: 700;
+        animation: mwPulse 1s ease-in-out infinite;
+      }
       #${PANEL_IDS.panel} .mw-title {
         font-size: 14px;
         font-weight: 700;
@@ -1617,6 +1645,25 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} .mw-status {
         font-size: 12px;
         margin: 6px 0;
+      }
+      #${PANEL_IDS.panel} .mw-status-busy {
+        background: #ffe8cc;
+        border: 1px solid #cc7a00;
+        border-radius: 4px;
+        padding: 6px 8px;
+        font-weight: 700;
+        animation: mwPulse 1s ease-in-out infinite;
+      }
+      @keyframes mwPulse {
+        0% {
+          box-shadow: 0 0 0 0 rgba(204, 122, 0, 0.35);
+        }
+        70% {
+          box-shadow: 0 0 0 8px rgba(204, 122, 0, 0);
+        }
+        100% {
+          box-shadow: 0 0 0 0 rgba(204, 122, 0, 0);
+        }
       }
       #${PANEL_IDS.panel} .mw-summary,
       #${PANEL_IDS.panel} .mw-section {
