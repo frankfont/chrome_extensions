@@ -364,6 +364,47 @@ function hasAnyStatsMetricValueOnPage() {
   return false;
 }
 
+function findLatestSnapshot() {
+  if (!state.snapshots.length) {
+    return null;
+  }
+  return state.snapshots[state.snapshots.length - 1];
+}
+
+function findReadDecreasesComparedToSnapshot(rows, previousSnapshot) {
+  if (!previousSnapshot || !Array.isArray(previousSnapshot.stories) || !previousSnapshot.stories.length) {
+    return [];
+  }
+
+  const previousMap = new Map();
+  previousSnapshot.stories.forEach((story) => {
+    previousMap.set(getStoryKey(story), story);
+  });
+
+  const decreases = [];
+  rows.forEach((row) => {
+    const key = getStoryKey(row);
+    const previous = previousMap.get(key);
+    if (!previous) {
+      return;
+    }
+
+    if (previous.reads === null || previous.reads === undefined || row.reads === null || row.reads === undefined) {
+      return;
+    }
+
+    if (row.reads < previous.reads - CHANGE_EPSILON) {
+      decreases.push({
+        storyName: row.storyName,
+        previousReads: previous.reads,
+        currentReads: row.reads
+      });
+    }
+  });
+
+  return decreases;
+}
+
 function buildSnapshot(rows, mode) {
   const capturedAt = nowIso();
   const stories = rows.map((row) => ({
@@ -456,6 +497,15 @@ async function captureSnapshot(mode) {
   const rows = extractStoryRows();
   if (!rows.length) {
     throw new Error("No story rows found. Confirm you are logged into Medium and your stats page is loaded.");
+  }
+
+  const previousSnapshot = findLatestSnapshot();
+  const readDecreases = findReadDecreasesComparedToSnapshot(rows, previousSnapshot);
+  if (readDecreases.length) {
+    const sample = readDecreases[0];
+    throw new Error(
+      `Snapshot not saved: Reads decreased for ${readDecreases.length} story(s) vs previous snapshot (example: ${sample.storyName} ${formatNumber(sample.previousReads)} -> ${formatNumber(sample.currentReads)}). Refresh stats and ensure the same Medium date filter before capturing.`
+    );
   }
 
   const snapshot = buildSnapshot(rows, mode);
@@ -667,16 +717,27 @@ function renderDailyChangesSummary() {
     return;
   }
 
+  const diffRows = computeDiffRows(baseSnapshot, targetSnapshot);
+  const invalidReadRows = diffRows.filter((row) => row.readsDelta !== null && row.readsDelta < -CHANGE_EPSILON);
+  const invalidWarningHtml = invalidReadRows.length
+    ? `
+      <div class="mw-warning">
+        Invalid comparison: Reads decreased for ${invalidReadRows.length} stor${invalidReadRows.length === 1 ? "y" : "ies"}, which should not happen for cumulative reads. Review Medium filters and recapture snapshots.
+      </div>
+    `
+    : "";
+
   const metricFilters = getDailySummaryMetricFilters();
   if (!Object.values(metricFilters).some(Boolean)) {
     state.dailySummaryEl.innerHTML = `
       <div class="mw-summary-head">Comparing ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>
+      ${invalidWarningHtml}
       <div class='mw-empty'>Enable at least one metric filter to show stories.</div>
     `;
     return;
   }
 
-  const changedRows = computeDiffRows(baseSnapshot, targetSnapshot)
+  const changedRows = diffRows
     .filter((row) => hasAnyTrackedChange(row, metricFilters))
     .sort((a, b) => {
       const earningsA = Math.abs(a.earningsDelta || 0);
@@ -695,6 +756,7 @@ function renderDailyChangesSummary() {
   if (!changedRows.length) {
     state.dailySummaryEl.innerHTML = `
       <div class="mw-summary-head">Comparing ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>
+      ${invalidWarningHtml}
       <div class='mw-empty'>No tracked changes detected across stories.</div>
     `;
     return;
@@ -723,6 +785,7 @@ function renderDailyChangesSummary() {
 
   state.dailySummaryEl.innerHTML = `
     <div class="mw-summary-head">Comparing ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>
+    ${invalidWarningHtml}
     <div class="mw-summary-count">Stories with changes: ${changedRows.length}</div>
     <div class="mw-change-list">${items}</div>
   `;
@@ -1186,6 +1249,14 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} .mw-change-meta {
         color: #555;
         margin: 2px 0 4px;
+      }
+      #${PANEL_IDS.panel} .mw-warning {
+        border: 1px solid #c94b16;
+        background: #fff4eb;
+        color: #8a2f0a;
+        padding: 6px 8px;
+        margin: 0 0 8px;
+        font-weight: 700;
       }
       #${PANEL_IDS.panel} .mw-change-deltas {
         display: flex;
