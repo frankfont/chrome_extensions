@@ -28,10 +28,14 @@ const AUTO_SCROLL_WAIT_INTERVAL_MS = 75;
 const AUTO_SCROLL_WAIT_TIMEOUT_MS = 1800;
 const COMPARE_AUTO_RENDER_DEBOUNCE_MS = 150;
 const ROUTE_CHECK_INTERVAL_MS = 500;
+const DEFAULT_TREND_GROUP_MAX_SIZE = 100;
+const MIN_TREND_GROUP_MAX_SIZE = 2;
+const MAX_TREND_GROUP_MAX_SIZE = 1000;
 
 const STORAGE_KEYS = {
   snapshots: "mwSnapshots",
-  lastAutoSnapshotDate: "mwLastAutoSnapshotDate"
+  lastAutoSnapshotDate: "mwLastAutoSnapshotDate",
+  trendGroupMaxSize: "mwTrendGroupMaxSize"
 };
 
 const PANEL_IDS = {
@@ -52,6 +56,12 @@ const state = {
   selectCompareA: null,
   selectCompareB: null,
   selectTrendStory: null,
+  trendFilterContainerEl: null,
+  trendGroupSettingsEl: null,
+  trendGroupMaxInputEl: null,
+  trendStoryGroups: [],
+  activeTrendStoryGroupKey: "",
+  trendGroupMaxSize: DEFAULT_TREND_GROUP_MAX_SIZE,
   selectDeleteStory: null,
   selectDeleteTimestamp: null,
   smartCaptureHintEl: null,
@@ -101,6 +111,13 @@ function setDeleteSectionVisible(visible) {
     return;
   }
   state.deleteSectionEl.style.display = visible ? "block" : "none";
+}
+
+function setTrendGroupSettingsVisible(visible) {
+  if (!state.trendGroupSettingsEl) {
+    return;
+  }
+  state.trendGroupSettingsEl.style.display = visible ? "flex" : "none";
 }
 
 function isTargetPage() {
@@ -1863,6 +1880,156 @@ function getAllStoryNames() {
   return Array.from(names).sort((a, b) => a.localeCompare(b));
 }
 
+function getTrendGroupLetter(storyName) {
+  const first = String(formatStoryTitleForDisplay(storyName || "")).trim().charAt(0).toUpperCase();
+  return /^[A-Z]$/.test(first) ? first : "#";
+}
+
+function sanitizeTrendGroupMaxSize(rawValue) {
+  const parsed = Number.parseInt(String(rawValue || ""), 10);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_TREND_GROUP_MAX_SIZE;
+  }
+  if (parsed < MIN_TREND_GROUP_MAX_SIZE) {
+    return MIN_TREND_GROUP_MAX_SIZE;
+  }
+  if (parsed > MAX_TREND_GROUP_MAX_SIZE) {
+    return MAX_TREND_GROUP_MAX_SIZE;
+  }
+  return parsed;
+}
+
+function getTrendGroupMaxSize() {
+  return sanitizeTrendGroupMaxSize(state.trendGroupMaxSize);
+}
+
+async function loadTrendGroupMaxSetting() {
+  const result = await getStorage([STORAGE_KEYS.trendGroupMaxSize]);
+  state.trendGroupMaxSize = sanitizeTrendGroupMaxSize(result[STORAGE_KEYS.trendGroupMaxSize]);
+}
+
+async function persistTrendGroupMaxSetting() {
+  await setStorage({
+    [STORAGE_KEYS.trendGroupMaxSize]: getTrendGroupMaxSize()
+  });
+}
+
+function buildTrendStoryGroups(stories) {
+  const maxGroupSize = getTrendGroupMaxSize();
+  if (!Array.isArray(stories) || stories.length <= maxGroupSize) {
+    return [];
+  }
+
+  const byLetter = new Map();
+  stories.forEach((storyName) => {
+    const letter = getTrendGroupLetter(storyName);
+    if (!byLetter.has(letter)) {
+      byLetter.set(letter, []);
+    }
+    byLetter.get(letter).push(storyName);
+  });
+
+  const letters = Array.from(byLetter.keys()).sort((a, b) => {
+    if (a === "#") {
+      return 1;
+    }
+    if (b === "#") {
+      return -1;
+    }
+    return a.localeCompare(b);
+  });
+
+  const groups = [];
+  letters.forEach((letter) => {
+    const items = byLetter.get(letter) || [];
+    if (items.length <= maxGroupSize) {
+      groups.push({
+        key: letter,
+        label: letter,
+        stories: items
+      });
+      return;
+    }
+
+    const chunkCount = Math.ceil(items.length / maxGroupSize);
+    for (let i = 0; i < chunkCount; i += 1) {
+      const label = `${letter}${i + 1}`;
+      groups.push({
+        key: label,
+        label,
+        stories: items.slice(i * maxGroupSize, (i + 1) * maxGroupSize)
+      });
+    }
+  });
+
+  return groups;
+}
+
+function renderTrendStoryGroupFilters() {
+  if (!state.trendFilterContainerEl) {
+    return;
+  }
+
+  const groups = Array.isArray(state.trendStoryGroups) ? state.trendStoryGroups : [];
+  if (!groups.length) {
+    state.trendFilterContainerEl.style.display = "none";
+    state.trendFilterContainerEl.innerHTML = "";
+    return;
+  }
+
+  state.trendFilterContainerEl.style.display = "flex";
+  state.trendFilterContainerEl.innerHTML = "";
+
+  const groupsByLetter = new Map();
+  groups.forEach((group) => {
+    const baseLetter = group.key.charAt(0);
+    if (!groupsByLetter.has(baseLetter)) {
+      groupsByLetter.set(baseLetter, []);
+    }
+    groupsByLetter.get(baseLetter).push(group);
+  });
+
+  for (let i = 0; i < 26; i += 1) {
+    const letter = String.fromCharCode(65 + i);
+    const letterGroups = groupsByLetter.get(letter) || [];
+
+    if (!letterGroups.length) {
+      const emptyButton = document.createElement("button");
+      emptyButton.type = "button";
+      emptyButton.className = "mw-trend-filter-btn mw-trend-filter-btn-disabled";
+      emptyButton.textContent = letter;
+      emptyButton.disabled = true;
+      state.trendFilterContainerEl.appendChild(emptyButton);
+      continue;
+    }
+
+    letterGroups.forEach((group) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "mw-trend-filter-btn";
+      if (group.key === state.activeTrendStoryGroupKey) {
+        button.classList.add("mw-trend-filter-btn-active");
+      }
+      button.dataset.trendGroupKey = group.key;
+      button.textContent = group.label;
+      state.trendFilterContainerEl.appendChild(button);
+    });
+  }
+
+  const symbolGroups = groupsByLetter.get("#") || [];
+  symbolGroups.forEach((group) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "mw-trend-filter-btn";
+    if (group.key === state.activeTrendStoryGroupKey) {
+      button.classList.add("mw-trend-filter-btn-active");
+    }
+    button.dataset.trendGroupKey = group.key;
+    button.textContent = group.label;
+    state.trendFilterContainerEl.appendChild(button);
+  });
+}
+
 function renderTrend(storyName) {
   if (!state.trendContainerEl) {
     return;
@@ -2075,7 +2242,7 @@ function refreshSegmentedCompareSelectors(preferredAId = "", preferredBId = "") 
   applyTimestampOptions(state.selectCompareDateB, state.selectCompareB, preferredBId, "Target snapshot", true);
 }
 
-function refreshSelectOptions() {
+function refreshSelectOptions(preferredTrendGroupKey = "") {
   const options = state.snapshots.map((snapshot) => ({
     value: snapshot.id,
     label: `${formatTimestamp(snapshot.capturedAt)} (${snapshot.mode})`
@@ -2110,18 +2277,43 @@ function refreshSelectOptions() {
   if (state.selectTrendStory) {
     const old = state.selectTrendStory.value;
     const stories = getAllStoryNames();
+    const groups = buildTrendStoryGroups(stories);
+    state.trendStoryGroups = groups;
+
+    if (groups.length) {
+      let nextGroupKey = preferredTrendGroupKey || state.activeTrendStoryGroupKey;
+      if (old && !preferredTrendGroupKey) {
+        const matched = groups.find((group) => group.stories.includes(old));
+        if (matched) {
+          nextGroupKey = matched.key;
+        }
+      }
+      if (!nextGroupKey || !groups.some((group) => group.key === nextGroupKey)) {
+        nextGroupKey = groups[0].key;
+      }
+      state.activeTrendStoryGroupKey = nextGroupKey;
+    } else {
+      state.activeTrendStoryGroupKey = "";
+    }
+
+    renderTrendStoryGroupFilters();
+
+    const visibleStories = groups.length
+      ? ((groups.find((group) => group.key === state.activeTrendStoryGroupKey) || groups[0]).stories || [])
+      : stories;
+
     state.selectTrendStory.innerHTML = "";
     const empty = document.createElement("option");
     empty.value = "";
     empty.textContent = "Select a story";
     state.selectTrendStory.appendChild(empty);
-    stories.forEach((storyName) => {
+    visibleStories.forEach((storyName) => {
       const option = document.createElement("option");
       option.value = storyName;
       option.textContent = formatStoryTitleForDisplay(storyName);
       state.selectTrendStory.appendChild(option);
     });
-    if (old && stories.includes(old)) {
+    if (old && visibleStories.includes(old)) {
       state.selectTrendStory.value = old;
     }
   }
@@ -2449,6 +2641,44 @@ function createPanelMarkup() {
         gap: 8px;
         flex-wrap: wrap;
       }
+      #${PANEL_IDS.panel} .mw-trend-filter-row {
+        display: none;
+        flex-wrap: wrap;
+        gap: 4px;
+        margin-bottom: 6px;
+      }
+      #${PANEL_IDS.panel} .mw-trend-filter-btn {
+        background: #f4f8f6;
+        border: 1px solid #c5d7cc;
+        color: #2f4f43;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1;
+        padding: 4px 6px;
+        border-radius: 3px;
+        cursor: pointer;
+      }
+      #${PANEL_IDS.panel} .mw-trend-filter-btn:hover {
+        background: #eaf3ee;
+      }
+      #${PANEL_IDS.panel} .mw-trend-filter-btn-active {
+        background: #dff3e4;
+        border-color: #8dc5a1;
+        color: #0a5c36;
+      }
+      #${PANEL_IDS.panel} .mw-trend-filter-btn-disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      #${PANEL_IDS.panel} .mw-trend-group-settings {
+        display: none;
+        align-items: center;
+        gap: 6px;
+        margin-bottom: 6px;
+      }
+      #${PANEL_IDS.panel} .mw-trend-group-settings input {
+        width: 72px;
+      }
       #${PANEL_IDS.panel} .mw-checkbox-row {
         display: flex;
         gap: 10px;
@@ -2550,6 +2780,12 @@ function createPanelMarkup() {
 
       <div class="mw-section">
         <div class="mw-section-title">Trend Over Time</div>
+        <div id="mw-trend-filters" class="mw-trend-filter-row" aria-label="Trend story starting-letter filters"></div>
+        <div id="mw-trend-group-settings" class="mw-trend-group-settings" aria-label="Trend list size settings">
+          <label for="mw-trend-group-max">Max stories per filter</label>
+          <input id="mw-trend-group-max" type="number" min="2" max="1000" step="1" value="100" />
+          <button id="mw-trend-group-apply" type="button">Set Max</button>
+        </div>
         <div class="mw-row">
           <select id="mw-trend-story"></select>
           <button id="mw-trend-run" type="button">Show Trend</button>
@@ -2604,6 +2840,9 @@ function wirePanelEvents() {
   state.auditSectionEl = document.getElementById("mw-audit-export-section");
   state.auditContainerEl = document.getElementById("mw-audit");
   state.selectTrendStory = document.getElementById("mw-trend-story");
+  state.trendFilterContainerEl = document.getElementById("mw-trend-filters");
+  state.trendGroupSettingsEl = document.getElementById("mw-trend-group-settings");
+  state.trendGroupMaxInputEl = document.getElementById("mw-trend-group-max");
   state.trendContainerEl = document.getElementById("mw-trend");
   state.selectDeleteStory = document.getElementById("mw-delete-story");
   state.selectDeleteTimestamp = document.getElementById("mw-delete-timestamp");
@@ -2613,6 +2852,11 @@ function wirePanelEvents() {
   setAuditSectionVisible(false);
   setTransferSectionVisible(false);
   setDeleteSectionVisible(false);
+  setTrendGroupSettingsVisible(false);
+
+  if (state.trendGroupMaxInputEl) {
+    state.trendGroupMaxInputEl.value = String(getTrendGroupMaxSize());
+  }
 
   if (state.diffContainerEl) {
     state.diffContainerEl.addEventListener("click", (event) => {
@@ -2782,9 +3026,60 @@ function wirePanelEvents() {
     }
   });
 
-  document.getElementById("mw-trend-run").addEventListener("click", () => {
+  document.getElementById("mw-trend-run").addEventListener("click", (event) => {
+    if (event.shiftKey) {
+      setTrendGroupSettingsVisible(true);
+      if (state.trendGroupMaxInputEl) {
+        state.trendGroupMaxInputEl.value = String(getTrendGroupMaxSize());
+      }
+      setStatus("Trend group size settings revealed.");
+    }
     renderTrend(state.selectTrendStory.value);
   });
+
+  document.getElementById("mw-trend-group-apply").addEventListener("click", async () => {
+    const input = state.trendGroupMaxInputEl;
+    if (!input) {
+      return;
+    }
+
+    const parsed = Number.parseInt(String(input.value || ""), 10);
+    if (!Number.isFinite(parsed) || parsed < MIN_TREND_GROUP_MAX_SIZE || parsed > MAX_TREND_GROUP_MAX_SIZE) {
+      setStatus(`Max stories per filter must be a whole number from ${MIN_TREND_GROUP_MAX_SIZE} to ${MAX_TREND_GROUP_MAX_SIZE}.`, true);
+      input.value = String(getTrendGroupMaxSize());
+      return;
+    }
+
+    state.trendGroupMaxSize = sanitizeTrendGroupMaxSize(parsed);
+    await persistTrendGroupMaxSetting();
+    input.value = String(getTrendGroupMaxSize());
+    refreshSelectOptions();
+    renderTrend(state.selectTrendStory ? state.selectTrendStory.value : "");
+    setStatus(`Trend filter max set to ${state.trendGroupMaxSize} stories per group.`);
+  });
+
+  if (state.trendFilterContainerEl) {
+    state.trendFilterContainerEl.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+
+      const button = target.closest("button[data-trend-group-key]");
+      if (!button) {
+        return;
+      }
+
+      const groupKey = button.getAttribute("data-trend-group-key") || "";
+      if (!groupKey || groupKey === state.activeTrendStoryGroupKey) {
+        return;
+      }
+
+      state.activeTrendStoryGroupKey = groupKey;
+      refreshSelectOptions(groupKey);
+      renderTrend(state.selectTrendStory ? state.selectTrendStory.value : "");
+    });
+  }
 
   document.getElementById("mw-delete-story-btn").addEventListener("click", async () => {
     try {
@@ -2953,6 +3248,7 @@ async function init() {
   startRouteWatcher();
   syncPanelVisibilityToRoute();
 
+  await loadTrendGroupMaxSetting();
   await loadSnapshots();
   refreshPanelData();
 

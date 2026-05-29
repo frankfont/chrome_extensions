@@ -52,6 +52,7 @@ Open methods:
 The panel includes an easy-access **Daily Changes Summary** near the top.
 
 - It automatically compares the latest snapshot against a daily baseline.
+- If exactly one snapshot exists, a prominent note explains that daily stats will be available the next day you open the panel.
 - Daily baseline rule:
 	- Use the **earliest snapshot** from the **most recent prior day**.
 	- If no prior day exists, use the **first snapshot from the current day**.
@@ -128,18 +129,32 @@ Story presence rules:
 - Rows are sorted most recent first.
 - For **today**, multiple snapshots may appear.
 - For any **earlier day**, only that day's most recent snapshot is shown.
+- If total stories exceed the trend picker max group size (default `100`), story selection is split into A-Z filter groups.
+	- Each letter is shown.
+	- Empty letters are disabled.
+	- If a letter exceeds the max size, that letter is split into numbered groups (example: `D1`, `D2`, `D3`).
+- Hidden advanced setting:
+	- Hold `Shift` while clicking `Show Trend` to reveal a normally hidden max-group-size input.
+	- Set a new max and click `Set Max` to rebuild trend filter groups with that size.
+	- Allowed range is `2` to `1000` stories per group.
+	- The chosen max value is saved in extension local storage and persists across browser restarts.
 
 ## Panel Usability
 
 - The panel has an `Expand`/`Collapse` button to widen the layout for large comparison tables.
-- The floating `MW` launcher turns green when Reads or Earnings increased in the default daily comparison.
+- The floating `WSM` launcher turns green when Reads or Earnings increased in the default daily comparison.
 
 ## Data Management
 
-- Storage uses `chrome.storage` and persists across browser sessions.
+- Storage uses `chrome.storage.local` and persists across browser sessions.
 - `Prune Snapshots` coalesces each day into one merged full snapshot (max coverage union across that day) and removes same-day duplicates.
-- User can manually delete data by story and/or specific timestamp.
-- No export/import feature is included.
+- `Transfer Data` section supports full export/import:
+	- `Export All` writes all snapshots to JSON and copies to clipboard when available.
+	- `Import All` restores snapshots from pasted exported JSON.
+- Advanced comparison export:
+	- `Export A/B JSON` is available via hidden advanced controls (Shift + `Run Default Comparison`).
+- `Delete Data` section is hidden by default and is revealed from hidden advanced controls.
+- `Delete Data` currently supports deleting by specific timestamp in the visible UI.
 
 ## Scope and Constraints
 
