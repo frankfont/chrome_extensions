@@ -1340,7 +1340,52 @@ function renderDiff(baseId, targetId) {
 
   const rows = computeDiffRows(baseSnapshot, targetSnapshot)
     .filter((row) => hasAnyTrackedChange(row, metricFilters));
-  const header = `<div class="mw-compare-title">Comparing ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>`;
+
+  const totals = {
+    presentations: 0,
+    views: 0,
+    reads: 0,
+    earnings: 0
+  };
+
+  rows.forEach((row) => {
+    if (metricFilters.presentations && row.presentationsDelta !== null && row.presentationsDelta !== undefined) {
+      totals.presentations += row.presentationsDelta;
+    }
+    if (metricFilters.views && row.viewsDelta !== null && row.viewsDelta !== undefined) {
+      totals.views += row.viewsDelta;
+    }
+    if (metricFilters.reads && row.readsDelta !== null && row.readsDelta !== undefined) {
+      totals.reads += row.readsDelta;
+    }
+    if (metricFilters.earnings && row.earningsDelta !== null && row.earningsDelta !== undefined) {
+      totals.earnings += row.earningsDelta;
+    }
+  });
+
+  const totalsItems = [];
+  if (metricFilters.presentations) {
+    totalsItems.push(`<span class="mw-compare-total-item ${toneClass(totals.presentations)}">Presentations ${formatSignedNumber(totals.presentations)}</span>`);
+  }
+  if (metricFilters.views) {
+    totalsItems.push(`<span class="mw-compare-total-item ${toneClass(totals.views)}">Views ${formatSignedNumber(totals.views)}</span>`);
+  }
+  if (metricFilters.reads) {
+    totalsItems.push(`<span class="mw-compare-total-item ${toneClass(totals.reads)}">Reads ${formatSignedNumber(totals.reads)}</span>`);
+  }
+  if (metricFilters.earnings) {
+    totalsItems.push(`<span class="mw-compare-total-item ${toneClass(totals.earnings)}">Earnings ${formatSignedCurrency(totals.earnings)}</span>`);
+  }
+
+  const header = `
+    <div class="mw-compare-head">
+      <div class="mw-compare-title">Comparing ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>
+      <div class="mw-compare-totals-box">
+        <div class="mw-compare-totals-label">Totals (${rows.length} stories)</div>
+        <div class="mw-compare-totals-items">${totalsItems.join("")}</div>
+      </div>
+    </div>
+  `;
 
   const tableRows = rows.map((row) => `
     <tr>
@@ -2207,6 +2252,36 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} .mw-compare-title {
         font-weight: 700;
         margin-bottom: 6px;
+      }
+      #${PANEL_IDS.panel} .mw-compare-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+        margin-bottom: 6px;
+      }
+      #${PANEL_IDS.panel} .mw-compare-head .mw-compare-title {
+        margin-bottom: 0;
+      }
+      #${PANEL_IDS.panel} .mw-compare-totals-box {
+        border: 1px solid #cfe2d8;
+        background: #f3faf6;
+        border-radius: 4px;
+        padding: 6px 8px;
+        min-width: 280px;
+      }
+      #${PANEL_IDS.panel} .mw-compare-totals-label {
+        color: #2f4f43;
+        font-weight: 700;
+        margin-bottom: 4px;
+      }
+      #${PANEL_IDS.panel} .mw-compare-totals-items {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      #${PANEL_IDS.panel} .mw-compare-total-item {
+        font-weight: 700;
       }
       #${PANEL_IDS.panel} .mw-summary-head {
         font-weight: 700;
