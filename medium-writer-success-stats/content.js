@@ -42,6 +42,8 @@ const state = {
   panelReady: false,
   launcherEl: null,
   panelEl: null,
+  selectCompareDateA: null,
+  selectCompareDateB: null,
   selectCompareA: null,
   selectCompareB: null,
   selectTrendStory: null,
@@ -93,7 +95,11 @@ function sleep(ms) {
 }
 
 function toDateKey(iso) {
-  return new Date(iso).toISOString().slice(0, 10);
+  const d = new Date(iso);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function nowIso() {
@@ -1311,6 +1317,104 @@ function refreshSnapshotSummary() {
   `;
 }
 
+function getSnapshotDayKey(snapshotId) {
+  if (!snapshotId) {
+    return "";
+  }
+  const snapshot = getSnapshotById(snapshotId);
+  return snapshot ? toDateKey(snapshot.capturedAt) : "";
+}
+
+function buildSnapshotDayBuckets() {
+  const buckets = new Map();
+  state.snapshots.forEach((snapshot) => {
+    const dayKey = toDateKey(snapshot.capturedAt);
+    if (!buckets.has(dayKey)) {
+      buckets.set(dayKey, []);
+    }
+    buckets.get(dayKey).push(snapshot);
+  });
+
+  buckets.forEach((list) => {
+    list.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+  });
+
+  const dayKeys = Array.from(buckets.keys()).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+  return { buckets, dayKeys };
+}
+
+function refreshSegmentedCompareSelectors(preferredAId = "", preferredBId = "") {
+  if (!state.selectCompareDateA || !state.selectCompareDateB || !state.selectCompareA || !state.selectCompareB) {
+    return;
+  }
+
+  const { buckets, dayKeys } = buildSnapshotDayBuckets();
+  const previousDayA = getSnapshotDayKey(preferredAId) || state.selectCompareDateA.value;
+  const previousDayB = getSnapshotDayKey(preferredBId) || state.selectCompareDateB.value;
+
+  const applyDayOptions = (selectEl, previousDay, placeholder, preferLatest) => {
+    selectEl.innerHTML = "";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = placeholder;
+    selectEl.appendChild(empty);
+
+    dayKeys.forEach((dayKey) => {
+      const option = document.createElement("option");
+      option.value = dayKey;
+      const count = (buckets.get(dayKey) || []).length;
+      option.textContent = `${dayKey} (${count})`;
+      selectEl.appendChild(option);
+    });
+
+    if (previousDay && dayKeys.includes(previousDay)) {
+      selectEl.value = previousDay;
+      return;
+    }
+
+    if (dayKeys.length) {
+      selectEl.value = preferLatest ? dayKeys[dayKeys.length - 1] : dayKeys[0];
+    }
+  };
+
+  const applyTimestampOptions = (daySelectEl, timestampSelectEl, preferredSnapshotId, placeholder, preferLatest) => {
+    const previousSnapshotId = preferredSnapshotId || timestampSelectEl.value;
+    const dayKey = daySelectEl.value;
+    const snapshotsForDay = dayKey ? buckets.get(dayKey) || [] : [];
+
+    timestampSelectEl.innerHTML = "";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = placeholder;
+    timestampSelectEl.appendChild(empty);
+
+    snapshotsForDay.forEach((snapshot) => {
+      const option = document.createElement("option");
+      option.value = snapshot.id;
+      option.textContent = `${formatTimestamp(snapshot.capturedAt)} (${snapshot.mode})`;
+      timestampSelectEl.appendChild(option);
+    });
+
+    // Most days have a single snapshot; hide timestamp picker unless day has multiple snapshots.
+    timestampSelectEl.style.display = snapshotsForDay.length > 1 ? "" : "none";
+
+    if (previousSnapshotId && snapshotsForDay.some((snapshot) => snapshot.id === previousSnapshotId)) {
+      timestampSelectEl.value = previousSnapshotId;
+      return;
+    }
+
+    if (snapshotsForDay.length) {
+      const picked = preferLatest ? snapshotsForDay[snapshotsForDay.length - 1] : snapshotsForDay[0];
+      timestampSelectEl.value = picked.id;
+    }
+  };
+
+  applyDayOptions(state.selectCompareDateA, previousDayA, "Base day", false);
+  applyDayOptions(state.selectCompareDateB, previousDayB, "Target day", true);
+  applyTimestampOptions(state.selectCompareDateA, state.selectCompareA, preferredAId, "Base snapshot", false);
+  applyTimestampOptions(state.selectCompareDateB, state.selectCompareB, preferredBId, "Target snapshot", true);
+}
+
 function refreshSelectOptions() {
   const options = state.snapshots.map((snapshot) => ({
     value: snapshot.id,
@@ -1340,8 +1444,7 @@ function refreshSelectOptions() {
     }
   };
 
-  applyOptions(state.selectCompareA, "Select base snapshot");
-  applyOptions(state.selectCompareB, "Select target snapshot");
+  refreshSegmentedCompareSelectors();
   applyOptions(state.selectDeleteTimestamp, "Select timestamp to delete");
 
   if (state.selectTrendStory) {
@@ -1390,11 +1493,8 @@ function refreshPanelData() {
   updateLauncherSignal();
 
   const [defaultA, defaultB] = findCompareDatesDefault();
-  if (state.selectCompareA && !state.selectCompareA.value && defaultA) {
-    state.selectCompareA.value = defaultA;
-  }
-  if (state.selectCompareB && !state.selectCompareB.value && defaultB) {
-    state.selectCompareB.value = defaultB;
+  if (defaultA && defaultB && state.selectCompareA && state.selectCompareB && (!state.selectCompareA.value || !state.selectCompareB.value)) {
+    refreshSegmentedCompareSelectors(defaultA, defaultB);
   }
 
   renderDiff(state.selectCompareA ? state.selectCompareA.value : "", state.selectCompareB ? state.selectCompareB.value : "");
@@ -1653,8 +1753,10 @@ function createPanelMarkup() {
           <label><input id="mw-compare-filter-earnings" type="checkbox" checked/>Earnings</label>
         </div>
         <div class="mw-row">
-          <select id="mw-compare-a"></select>
-          <select id="mw-compare-b"></select>
+            <select id="mw-compare-a-day"></select>
+            <select id="mw-compare-a"></select>
+            <select id="mw-compare-b-day"></select>
+            <select id="mw-compare-b"></select>
           <button id="mw-compare-run" type="button">Compare</button>
           <button id="mw-audit-compare" type="button">Audit Snapshot Pair</button>
           <button id="mw-export-compare-json" type="button">Export A/B JSON</button>
@@ -1713,6 +1815,8 @@ function wirePanelEvents() {
   state.compareFilterViewsEl = document.getElementById("mw-compare-filter-views");
   state.compareFilterReadsEl = document.getElementById("mw-compare-filter-reads");
   state.compareFilterEarningsEl = document.getElementById("mw-compare-filter-earnings");
+  state.selectCompareDateA = document.getElementById("mw-compare-a-day");
+  state.selectCompareDateB = document.getElementById("mw-compare-b-day");
   state.selectCompareA = document.getElementById("mw-compare-a");
   state.selectCompareB = document.getElementById("mw-compare-b");
   state.diffContainerEl = document.getElementById("mw-diff");
@@ -1776,11 +1880,22 @@ function wirePanelEvents() {
       setStatus("Need at least two snapshots for default comparison.", true);
       return;
     }
-    state.selectCompareA.value = a;
-    state.selectCompareB.value = b;
+    refreshSegmentedCompareSelectors(a, b);
     renderDiff(a, b);
     setStatus("Default comparison rendered.");
   });
+
+  if (state.selectCompareDateA) {
+    state.selectCompareDateA.addEventListener("change", () => {
+      refreshSegmentedCompareSelectors("", state.selectCompareB ? state.selectCompareB.value : "");
+    });
+  }
+
+  if (state.selectCompareDateB) {
+    state.selectCompareDateB.addEventListener("change", () => {
+      refreshSegmentedCompareSelectors(state.selectCompareA ? state.selectCompareA.value : "", "");
+    });
+  }
 
   document.getElementById("mw-open-transfer-data").addEventListener("click", () => {
     setTransferSectionVisible(true);

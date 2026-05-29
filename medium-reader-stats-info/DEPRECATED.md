@@ -1,0 +1,1 @@
+This chrome extension is deprecated
