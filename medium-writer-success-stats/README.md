@@ -26,6 +26,10 @@ This extension stores values as text and numbers. It does not take screenshots.
 - Automatic snapshot: once per day on the first visit to `https://medium.com/me/stats`.
 - Manual snapshot: user can trigger a snapshot from the extension popup.
 - Multiple manual snapshots per day are allowed.
+- Hybrid storage model:
+	- First snapshot of each day is stored as a full snapshot.
+	- Later snapshots on the same day are stored sparsely (only changed story records).
+	- Compare, daily summary, and trend views materialize sparse snapshots back into full point-in-time states before computing diffs.
 - Snapshot key: `Story Name + timestamp`.
 
 ## Panel Access

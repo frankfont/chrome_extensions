@@ -39,6 +39,8 @@ const PANEL_IDS = {
 
 const state = {
   snapshots: [],
+  materializedSnapshotsById: new Map(),
+  materializedSnapshotsVersion: "",
   panelReady: false,
   launcherEl: null,
   panelEl: null,
@@ -483,6 +485,115 @@ function findLatestSnapshot() {
   return state.snapshots[state.snapshots.length - 1];
 }
 
+function isSparseSnapshot(snapshot) {
+  return !!snapshot && snapshot.storageMode === "sparse";
+}
+
+function normalizeStoryRecord(story, fallbackTimestamp) {
+  if (!story) {
+    return null;
+  }
+
+  const normalizedStoryName = String(story.storyName || "").trim();
+  if (!normalizedStoryName) {
+    return null;
+  }
+
+  return {
+    key: story.key || `${normalizedStoryName}__${fallbackTimestamp}`,
+    storyName: normalizedStoryName,
+    presentations: story.presentations !== undefined ? story.presentations : null,
+    views: story.views !== undefined ? story.views : null,
+    reads: story.reads !== undefined ? story.reads : null,
+    earnings: story.earnings !== undefined ? story.earnings : null,
+    timestamp: story.timestamp || fallbackTimestamp,
+    mediumUrl: story.mediumUrl || "",
+    storyId: story.storyId || "",
+    removed: !!story.removed
+  };
+}
+
+function getSnapshotCacheVersion() {
+  return state.snapshots
+    .map((snapshot) => `${snapshot.id}:${snapshot.storageMode || "full"}:${Array.isArray(snapshot.stories) ? snapshot.stories.length : 0}`)
+    .join("|");
+}
+
+function rebuildMaterializedSnapshotCache() {
+  const cache = new Map();
+  let activeDayKey = "";
+  let dayStoryMap = new Map();
+
+  state.snapshots.forEach((snapshot) => {
+    const snapshotDayKey = toDateKey(snapshot.capturedAt);
+    if (snapshotDayKey !== activeDayKey) {
+      activeDayKey = snapshotDayKey;
+      dayStoryMap = new Map();
+    }
+
+    const normalizedStories = Array.isArray(snapshot.stories)
+      ? snapshot.stories
+          .map((story) => normalizeStoryRecord(story, snapshot.capturedAt))
+          .filter(Boolean)
+      : [];
+
+    if (isSparseSnapshot(snapshot) && dayStoryMap.size > 0) {
+      normalizedStories.forEach((story) => {
+        const key = getStoryKey(story);
+        if (story.removed) {
+          dayStoryMap.delete(key);
+          return;
+        }
+        dayStoryMap.set(key, {
+          ...story,
+          removed: false,
+          timestamp: snapshot.capturedAt,
+          key: `${story.storyName}__${snapshot.capturedAt}`
+        });
+      });
+    } else {
+      dayStoryMap = new Map();
+      normalizedStories.forEach((story) => {
+        if (story.removed) {
+          return;
+        }
+        dayStoryMap.set(getStoryKey(story), {
+          ...story,
+          removed: false,
+          timestamp: snapshot.capturedAt,
+          key: `${story.storyName}__${snapshot.capturedAt}`
+        });
+      });
+    }
+
+    const materializedStories = Array.from(dayStoryMap.values()).sort((a, b) => a.storyName.localeCompare(b.storyName));
+    cache.set(snapshot.id, {
+      ...snapshot,
+      storageMode: snapshot.storageMode || "full",
+      stories: materializedStories
+    });
+  });
+
+  state.materializedSnapshotsById = cache;
+  state.materializedSnapshotsVersion = getSnapshotCacheVersion();
+}
+
+function ensureMaterializedSnapshotCache() {
+  const currentVersion = getSnapshotCacheVersion();
+  if (state.materializedSnapshotsVersion === currentVersion) {
+    return;
+  }
+  rebuildMaterializedSnapshotCache();
+}
+
+function getAllMaterializedSnapshots() {
+  ensureMaterializedSnapshotCache();
+  const byId = state.materializedSnapshotsById;
+  return state.snapshots
+    .map((snapshot) => byId.get(snapshot.id) || null)
+    .filter(Boolean);
+}
+
 function findReadDecreasesComparedToSnapshot(rows, previousSnapshot) {
   if (!previousSnapshot || !Array.isArray(previousSnapshot.stories) || !previousSnapshot.stories.length) {
     return [];
@@ -519,7 +630,7 @@ function findReadDecreasesComparedToSnapshot(rows, previousSnapshot) {
 
 function buildSnapshot(rows, mode) {
   const capturedAt = nowIso();
-  const stories = rows.map((row) => ({
+  const fullStories = rows.map((row) => ({
     key: `${row.storyName}__${capturedAt}`,
     storyName: row.storyName,
     presentations: row.presentations,
@@ -531,12 +642,80 @@ function buildSnapshot(rows, mode) {
     storyId: row.storyId || ""
   }));
 
+  const latestSnapshot = findLatestSnapshot();
+  const sameDayLatest = latestSnapshot && toDateKey(latestSnapshot.capturedAt) === toDateKey(capturedAt)
+    ? getSnapshotById(latestSnapshot.id)
+    : null;
+
+  if (!sameDayLatest) {
+    return {
+      id: capturedAt,
+      mode,
+      capturedAt,
+      sourceUrl: window.location.href,
+      storageMode: "full",
+      stories: fullStories
+    };
+  }
+
+  const previousMap = buildStoryMap(sameDayLatest);
+  const currentMap = new Map();
+  fullStories.forEach((story) => {
+    currentMap.set(getStoryKey(story), story);
+  });
+
+  const allKeys = new Set([...previousMap.keys(), ...currentMap.keys()]);
+  const sparseStories = [];
+  allKeys.forEach((key) => {
+    const previous = previousMap.get(key) || null;
+    const current = currentMap.get(key) || null;
+
+    if (!previous && current) {
+      sparseStories.push(current);
+      return;
+    }
+
+    if (previous && !current) {
+      sparseStories.push({
+        key: `${previous.storyName}__${capturedAt}`,
+        storyName: previous.storyName,
+        presentations: null,
+        views: null,
+        reads: null,
+        earnings: null,
+        timestamp: capturedAt,
+        mediumUrl: previous.mediumUrl || "",
+        storyId: previous.storyId || "",
+        removed: true
+      });
+      return;
+    }
+
+    if (!previous || !current) {
+      return;
+    }
+
+    const changed =
+      previous.storyName !== current.storyName ||
+      previous.presentations !== current.presentations ||
+      previous.views !== current.views ||
+      previous.reads !== current.reads ||
+      previous.earnings !== current.earnings ||
+      previous.mediumUrl !== current.mediumUrl ||
+      previous.storyId !== current.storyId;
+
+    if (changed) {
+      sparseStories.push(current);
+    }
+  });
+
   return {
     id: capturedAt,
     mode,
     capturedAt,
     sourceUrl: window.location.href,
-    stories
+    storageMode: "sparse",
+    stories: sparseStories
   };
 }
 
@@ -544,6 +723,7 @@ async function loadSnapshots() {
   const result = await getStorage([STORAGE_KEYS.snapshots]);
   state.snapshots = Array.isArray(result[STORAGE_KEYS.snapshots]) ? result[STORAGE_KEYS.snapshots] : [];
   state.snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+  rebuildMaterializedSnapshotCache();
 }
 
 async function persistSnapshots() {
@@ -618,7 +798,8 @@ async function captureSnapshot(mode) {
       throw new Error(`${integrityError} Snapshot not saved.`);
     }
 
-    const previousSnapshot = findLatestSnapshot();
+    const latestSnapshot = findLatestSnapshot();
+    const previousSnapshot = latestSnapshot ? getSnapshotById(latestSnapshot.id) : null;
     const readDecreases = findReadDecreasesComparedToSnapshot(rows, previousSnapshot);
     if (readDecreases.length) {
       const sample = readDecreases[0];
@@ -632,14 +813,21 @@ async function captureSnapshot(mode) {
     state.snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
     await persistSnapshots();
     refreshPanelData();
-    setStatus(`Snapshot captured: ${snapshot.stories.length} stories (${mode}).`);
+    const storyCountLabel = snapshot.storageMode === "sparse"
+      ? `${snapshot.stories.length} changed story record(s)`
+      : `${snapshot.stories.length} stories`;
+    setStatus(`Snapshot captured: ${storyCountLabel} (${mode}, ${snapshot.storageMode}).`);
   } finally {
     setSnapshotCaptureUiBusy(false);
   }
 }
 
 function getSnapshotById(id) {
-  return state.snapshots.find((snapshot) => snapshot.id === id) || null;
+  if (!id) {
+    return null;
+  }
+  ensureMaterializedSnapshotCache();
+  return state.materializedSnapshotsById.get(id) || null;
 }
 
 function findDefaultComparison() {
@@ -1209,6 +1397,7 @@ async function importAllSnapshotsJson(rawJson) {
 
   state.snapshots = importedSnapshots;
   state.snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+  rebuildMaterializedSnapshotCache();
   refreshPanelData();
   setStatus(`Imported ${state.snapshots.length} snapshots.`);
 }
@@ -1254,7 +1443,7 @@ async function pruneSnapshotsKeepEarliestPerDay() {
 
 function getAllStoryNames() {
   const names = new Set();
-  state.snapshots.forEach((snapshot) => {
+  getAllMaterializedSnapshots().forEach((snapshot) => {
     snapshot.stories.forEach((story) => names.add(story.storyName));
   });
   return Array.from(names).sort((a, b) => a.localeCompare(b));
@@ -1271,7 +1460,7 @@ function renderTrend(storyName) {
   }
 
   const rows = [];
-  state.snapshots.forEach((snapshot) => {
+  getAllMaterializedSnapshots().forEach((snapshot) => {
     const hit = snapshot.stories.find((story) => story.storyName === storyName);
     if (hit) {
       rows.push({
