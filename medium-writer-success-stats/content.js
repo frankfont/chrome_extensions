@@ -235,6 +235,38 @@ function sanitizeText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
 }
 
+function formatStoryTitleForDisplay(storyName) {
+  return String(storyName || "").replace(/\s*·\s*View\s+story\s*$/i, "").trim();
+}
+
+function getStatsPostUrl(story) {
+  if (!story) {
+    return "";
+  }
+
+  const rawUrl = String(story.mediumUrl || "").trim();
+  if (rawUrl && rawUrl.includes("/me/stats/post/")) {
+    return rawUrl;
+  }
+
+  const idMatch = rawUrl.match(/\/(?:me\/stats\/post|p)\/([a-zA-Z0-9]+)/);
+  const storyId = story.storyId || (idMatch ? idMatch[1] : "");
+  if (!storyId) {
+    return "";
+  }
+
+  return `https://medium.com/me/stats/post/${storyId}`;
+}
+
+function renderStoryTitleHtml(storyName, storyUrl) {
+  const title = formatStoryTitleForDisplay(storyName);
+  if (!storyUrl) {
+    return title;
+  }
+
+  return `<a class="mw-story-link" href="${storyUrl}" target="_blank" rel="noopener noreferrer" title="Open stats post page">${title}</a>`;
+}
+
 function getStorage(keys) {
   return new Promise((resolve, reject) => {
     chrome.storage.local.get(keys, (result) => {
@@ -573,7 +605,7 @@ async function captureSnapshot(mode) {
   if (readDecreases.length) {
     const sample = readDecreases[0];
     throw new Error(
-      `Snapshot not saved: Reads decreased for ${readDecreases.length} story(s) vs previous snapshot (example: ${sample.storyName} ${formatNumber(sample.previousReads)} -> ${formatNumber(sample.currentReads)}). Refresh stats and ensure the same Medium date filter before capturing.`
+      `Snapshot not saved: Reads decreased for ${readDecreases.length} story(s) vs previous snapshot (example: ${formatStoryTitleForDisplay(sample.storyName)} ${formatNumber(sample.previousReads)} -> ${formatNumber(sample.currentReads)}). Refresh stats and ensure the same Medium date filter before capturing.`
     );
   }
 
@@ -667,6 +699,7 @@ function computeDiffRows(baseSnapshot, targetSnapshot) {
     const b = targetMap.get(key) || null;
 
     const storyName = (b && b.storyName) || (a && a.storyName) || "(Unknown Story)";
+    const storyUrl = (b && getStatsPostUrl(b)) || (a && getStatsPostUrl(a)) || "";
     const status = !a && b ? "new" : a && !b ? "removed" : "existing";
 
     const delta = (x, y) => {
@@ -685,6 +718,7 @@ function computeDiffRows(baseSnapshot, targetSnapshot) {
 
     diffRows.push({
       storyName,
+      storyUrl,
       status,
       presentationsA: a ? a.presentations : null,
       presentationsB: b ? b.presentations : null,
@@ -840,7 +874,7 @@ function renderDailyChangesSummary() {
 
     return `
       <div class="mw-change-item">
-        <div class="mw-change-title">${row.storyName}</div>
+        <div class="mw-change-title">${renderStoryTitleHtml(row.storyName, row.storyUrl)}</div>
         <div class="mw-change-meta">status: ${statusText}</div>
         <div class="mw-change-deltas">
           <span class="${presentationsTone}">Presentations ${formatSignedNumber(row.presentationsDelta)}</span>
@@ -920,7 +954,7 @@ function renderDiff(baseId, targetId) {
 
   const tableRows = rows.map((row) => `
     <tr>
-      <td>${row.storyName}</td>
+      <td>${renderStoryTitleHtml(row.storyName, row.storyUrl)}</td>
       <td>${row.status}</td>
       <td>${formatNumber(row.viewsA)}</td>
       <td>${formatNumber(row.viewsB)}</td>
@@ -1000,7 +1034,7 @@ function renderSnapshotAudit(baseId, targetId) {
 
   const suspiciousRowsHtml = suspicious.map((row) => `
     <tr>
-      <td>${row.storyName}</td>
+      <td>${renderStoryTitleHtml(row.storyName, row.storyUrl)}</td>
       <td>${formatNumber(row.viewsA)}</td>
       <td>${formatNumber(row.viewsB)}</td>
       <td>${formatNumber(row.readsA)}</td>
@@ -1458,7 +1492,7 @@ function refreshSelectOptions() {
     stories.forEach((storyName) => {
       const option = document.createElement("option");
       option.value = storyName;
-      option.textContent = storyName;
+      option.textContent = formatStoryTitleForDisplay(storyName);
       state.selectTrendStory.appendChild(option);
     });
     if (old && stories.includes(old)) {
@@ -1477,7 +1511,7 @@ function refreshSelectOptions() {
     stories.forEach((storyName) => {
       const option = document.createElement("option");
       option.value = storyName;
-      option.textContent = storyName;
+      option.textContent = formatStoryTitleForDisplay(storyName);
       state.selectDeleteStory.appendChild(option);
     });
     if (old && stories.includes(old)) {
@@ -1671,6 +1705,13 @@ function createPanelMarkup() {
       }
       #${PANEL_IDS.panel} .mw-change-title {
         font-weight: 700;
+      }
+      #${PANEL_IDS.panel} .mw-story-link {
+        color: #0a5c36;
+        text-decoration: underline;
+      }
+      #${PANEL_IDS.panel} .mw-story-link:hover {
+        color: #08482a;
       }
       #${PANEL_IDS.panel} .mw-change-meta {
         color: #555;
