@@ -65,6 +65,8 @@ The panel includes an easy-access **Daily Changes Summary** near the top.
 
 The **Compare Any Two** area supports manual picker-based comparisons and a default quick compare.
 
+- Compare results auto-refresh when Base/Target day or snapshot selections change.
+
 - Metric filter checkboxes are available for: Presentations, Views, Reads, Earnings.
 - All compare metric filters are enabled by default.
 - If a metric checkbox is unchecked, that metric no longer qualifies a story for inclusion in compare results.
@@ -130,6 +132,7 @@ Story presence rules:
 ## Data Management
 
 - Storage uses `chrome.storage` and persists across browser sessions.
+- `Prune Snapshots` coalesces each day into one merged full snapshot (max coverage union across that day) and removes same-day duplicates.
 - User can manually delete data by story and/or specific timestamp.
 - No export/import feature is included.
 

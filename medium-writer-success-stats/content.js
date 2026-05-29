@@ -22,8 +22,11 @@
 const TARGET_URL_PREFIX = "https://medium.com/me/stats";
 const CHANGE_EPSILON = 0.000001;
 const AUTO_SCROLL_STABLE_ITERATIONS = 3;
+const AUTO_SCROLL_CONFIRMATION_PASSES = 2;
 const AUTO_SCROLL_MAX_ITERATIONS = 40;
-const AUTO_SCROLL_DELAY_MS = 450;
+const AUTO_SCROLL_WAIT_INTERVAL_MS = 75;
+const AUTO_SCROLL_WAIT_TIMEOUT_MS = 1800;
+const COMPARE_AUTO_RENDER_DEBOUNCE_MS = 150;
 const ROUTE_CHECK_INTERVAL_MS = 500;
 
 const STORAGE_KEYS = {
@@ -71,7 +74,8 @@ const state = {
   routeWatcherStarted: false,
   keyboardShortcutsWired: false,
   runtimeMessagesWired: false,
-  transferSectionEl: null
+  transferSectionEl: null,
+  compareRenderTimer: null
 };
 
 function setAuditSectionVisible(visible) {
@@ -351,15 +355,40 @@ function countPotentialRows() {
   return Math.max(tableRows, storyLinks);
 }
 
+function getDocumentScrollHeight() {
+  return Math.max(
+    document.body ? document.body.scrollHeight : 0,
+    document.documentElement ? document.documentElement.scrollHeight : 0
+  );
+}
+
+async function waitForPageGrowth(previousCount, previousScrollHeight) {
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < AUTO_SCROLL_WAIT_TIMEOUT_MS) {
+    const currentCount = countPotentialRows();
+    const currentScrollHeight = getDocumentScrollHeight();
+    if (currentCount > previousCount || currentScrollHeight > previousScrollHeight) {
+      return true;
+    }
+    await sleep(AUTO_SCROLL_WAIT_INTERVAL_MS);
+  }
+
+  return false;
+}
+
 async function autoScrollForDataRows() {
   let stableLoops = 0;
   let lastCount = countPotentialRows();
+  let lastScrollHeight = getDocumentScrollHeight();
 
   for (let i = 0; i < AUTO_SCROLL_MAX_ITERATIONS; i += 1) {
     window.scrollTo(0, document.body.scrollHeight);
-    await sleep(AUTO_SCROLL_DELAY_MS);
+
+    await waitForPageGrowth(lastCount, lastScrollHeight);
 
     const currentCount = countPotentialRows();
+    const currentScrollHeight = getDocumentScrollHeight();
     if (currentCount <= lastCount) {
       stableLoops += 1;
     } else {
@@ -367,8 +396,35 @@ async function autoScrollForDataRows() {
       lastCount = currentCount;
     }
 
+    if (currentScrollHeight > lastScrollHeight) {
+      lastScrollHeight = currentScrollHeight;
+    }
+
     if (stableLoops >= AUTO_SCROLL_STABLE_ITERATIONS) {
-      break;
+      let confirmationPassed = true;
+
+      for (let confirmation = 0; confirmation < AUTO_SCROLL_CONFIRMATION_PASSES; confirmation += 1) {
+        const priorCount = lastCount;
+        const priorScrollHeight = lastScrollHeight;
+
+        window.scrollTo(0, document.body.scrollHeight);
+        await waitForPageGrowth(priorCount, priorScrollHeight);
+
+        const confirmationCount = countPotentialRows();
+        const confirmationScrollHeight = getDocumentScrollHeight();
+
+        if (confirmationCount > priorCount || confirmationScrollHeight > priorScrollHeight) {
+          confirmationPassed = false;
+          stableLoops = 0;
+          lastCount = confirmationCount;
+          lastScrollHeight = confirmationScrollHeight > priorScrollHeight ? confirmationScrollHeight : lastScrollHeight;
+          break;
+        }
+      }
+
+      if (confirmationPassed) {
+        break;
+      }
     }
   }
 }
@@ -1193,6 +1249,17 @@ function updateLauncherSignal() {
   state.launcherEl.title = "Open Medium Stats panel";
 }
 
+function scheduleCompareRender() {
+  if (state.compareRenderTimer) {
+    window.clearTimeout(state.compareRenderTimer);
+  }
+
+  state.compareRenderTimer = window.setTimeout(() => {
+    state.compareRenderTimer = null;
+    renderDiff(state.selectCompareA ? state.selectCompareA.value : "", state.selectCompareB ? state.selectCompareB.value : "");
+  }, COMPARE_AUTO_RENDER_DEBOUNCE_MS);
+}
+
 function renderDiff(baseId, targetId) {
   if (!state.diffContainerEl) {
     return;
@@ -1454,43 +1521,128 @@ async function importAllSnapshotsJson(rawJson) {
   setStatus(`Imported ${state.snapshots.length} snapshots.`);
 }
 
-async function pruneSnapshotsKeepEarliestPerDay() {
+function mergeDailyStories(daySnapshots, mergedCapturedAt) {
+  const mergedByStoryKey = new Map();
+
+  daySnapshots.forEach((snapshot) => {
+    snapshot.stories.forEach((story) => {
+      const storyKey = getStoryKey(story);
+      const existing = mergedByStoryKey.get(storyKey) || {
+        storyName: story.storyName,
+        presentations: null,
+        views: null,
+        reads: null,
+        earnings: null,
+        mediumUrl: "",
+        storyId: ""
+      };
+
+      const merged = {
+        ...existing,
+        storyName: story.storyName || existing.storyName,
+        presentations: story.presentations !== null && story.presentations !== undefined ? story.presentations : existing.presentations,
+        views: story.views !== null && story.views !== undefined ? story.views : existing.views,
+        reads: story.reads !== null && story.reads !== undefined ? story.reads : existing.reads,
+        earnings: story.earnings !== null && story.earnings !== undefined ? story.earnings : existing.earnings,
+        mediumUrl: story.mediumUrl || existing.mediumUrl,
+        storyId: story.storyId || existing.storyId
+      };
+
+      mergedByStoryKey.set(storyKey, merged);
+    });
+  });
+
+  return Array.from(mergedByStoryKey.values())
+    .sort((a, b) => a.storyName.localeCompare(b.storyName))
+    .map((story) => ({
+      key: `${story.storyName}__${mergedCapturedAt}`,
+      storyName: story.storyName,
+      presentations: story.presentations,
+      views: story.views,
+      reads: story.reads,
+      earnings: story.earnings,
+      timestamp: mergedCapturedAt,
+      mediumUrl: story.mediumUrl || "",
+      storyId: story.storyId || ""
+    }));
+}
+
+function buildCoalescedDailySnapshots() {
+  const materializedSnapshots = getAllMaterializedSnapshots().sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+  const snapshotsByDay = new Map();
+
+  materializedSnapshots.forEach((snapshot) => {
+    const dayKey = toDateKey(snapshot.capturedAt);
+    if (!snapshotsByDay.has(dayKey)) {
+      snapshotsByDay.set(dayKey, []);
+    }
+    snapshotsByDay.get(dayKey).push(snapshot);
+  });
+
+  const dayKeys = Array.from(snapshotsByDay.keys()).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+
+  return dayKeys.map((dayKey) => {
+    const daySnapshots = snapshotsByDay.get(dayKey) || [];
+    daySnapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+    const lastSnapshot = daySnapshots[daySnapshots.length - 1];
+    const mergedCapturedAt = lastSnapshot.capturedAt;
+    const mergedStories = mergeDailyStories(daySnapshots, mergedCapturedAt);
+
+    return {
+      id: lastSnapshot.id,
+      mode: "prune-coalesced",
+      capturedAt: mergedCapturedAt,
+      sourceUrl: lastSnapshot.sourceUrl,
+      storageMode: "full",
+      stories: mergedStories
+    };
+  });
+}
+
+async function pruneSnapshotsCoalescedDaily() {
   if (!state.snapshots.length) {
     setStatus("No snapshots available to prune.");
     return;
   }
 
-  const sorted = [...state.snapshots].sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
-  const earliestByDay = new Map();
-
-  sorted.forEach((snapshot) => {
-    const dayKey = toDateKey(snapshot.capturedAt);
-    if (!earliestByDay.has(dayKey)) {
-      earliestByDay.set(dayKey, snapshot);
-    }
-  });
-
-  const pruned = Array.from(earliestByDay.values()).sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
   const beforeCount = state.snapshots.length;
-  const afterCount = pruned.length;
-  const removedCount = beforeCount - afterCount;
+  const before = [...state.snapshots].sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+  const coalesced = buildCoalescedDailySnapshots();
 
-  if (removedCount <= 0) {
-    setStatus("No duplicate same-day snapshots found to prune.");
+  const afterCount = coalesced.length;
+  const removedCount = beforeCount - afterCount;
+  const changedWithoutRemoval =
+    removedCount === 0 &&
+    (before.some((snapshot, index) => {
+      const candidate = coalesced[index];
+      if (!candidate) {
+        return true;
+      }
+      if ((snapshot.storageMode || "full") !== candidate.storageMode) {
+        return true;
+      }
+      if ((snapshot.mode || "") !== candidate.mode) {
+        return true;
+      }
+      return (Array.isArray(snapshot.stories) ? snapshot.stories.length : 0) !== (Array.isArray(candidate.stories) ? candidate.stories.length : 0);
+    }));
+
+  if (removedCount <= 0 && !changedWithoutRemoval) {
+    setStatus("No same-day snapshots to coalesce.");
     return;
   }
 
-  const confirmMessage = `Prune Snapshots will permanently delete ${removedCount} snapshot(s) and keep ${afterCount} earliest-of-day snapshot(s).\n\nDo you want to continue?`;
+  const confirmMessage = `Prune Snapshots will coalesce each day into one merged full snapshot and permanently delete ${removedCount > 0 ? removedCount : 0} snapshot(s).\n\nDo you want to continue?`;
   const confirmed = window.confirm(confirmMessage);
   if (!confirmed) {
     setStatus("Prune canceled.");
     return;
   }
 
-  state.snapshots = pruned;
+  state.snapshots = coalesced;
   await persistSnapshots();
   refreshPanelData();
-  setStatus(`Pruned snapshots: removed ${removedCount}, kept ${afterCount}.`);
+  setStatus(`Pruned snapshots: coalesced to ${afterCount} daily snapshot(s), removed ${removedCount > 0 ? removedCount : 0}.`);
 }
 
 function getAllStoryNames() {
@@ -2106,7 +2258,6 @@ function createPanelMarkup() {
             <select id="mw-compare-a"></select>
             <select id="mw-compare-b-day"></select>
             <select id="mw-compare-b"></select>
-          <button id="mw-compare-run" type="button">Compare</button>
           <button id="mw-audit-compare" type="button">Audit Snapshot Pair</button>
           <button id="mw-export-compare-json" type="button">Export A/B JSON</button>
         </div>
@@ -2211,7 +2362,7 @@ function wirePanelEvents() {
       return;
     }
     checkbox.addEventListener("change", () => {
-      renderDiff(state.selectCompareA ? state.selectCompareA.value : "", state.selectCompareB ? state.selectCompareB.value : "");
+      scheduleCompareRender();
     });
   });
 
@@ -2245,12 +2396,26 @@ function wirePanelEvents() {
   if (state.selectCompareDateA) {
     state.selectCompareDateA.addEventListener("change", () => {
       refreshSegmentedCompareSelectors("", state.selectCompareB ? state.selectCompareB.value : "");
+      scheduleCompareRender();
     });
   }
 
   if (state.selectCompareDateB) {
     state.selectCompareDateB.addEventListener("change", () => {
       refreshSegmentedCompareSelectors(state.selectCompareA ? state.selectCompareA.value : "", "");
+      scheduleCompareRender();
+    });
+  }
+
+  if (state.selectCompareA) {
+    state.selectCompareA.addEventListener("change", () => {
+      scheduleCompareRender();
+    });
+  }
+
+  if (state.selectCompareB) {
+    state.selectCompareB.addEventListener("change", () => {
+      scheduleCompareRender();
     });
   }
 
@@ -2261,7 +2426,7 @@ function wirePanelEvents() {
 
   document.getElementById("mw-prune-snapshots").addEventListener("click", async () => {
     try {
-      await pruneSnapshotsKeepEarliestPerDay();
+      await pruneSnapshotsCoalescedDaily();
     } catch (err) {
       setStatus(err.message || "Prune snapshots failed.", true);
     }
@@ -2283,13 +2448,6 @@ function wirePanelEvents() {
     } catch (err) {
       setStatus(err.message || "Import all failed.", true);
     }
-  });
-
-  document.getElementById("mw-compare-run").addEventListener("click", () => {
-    const a = state.selectCompareA.value;
-    const b = state.selectCompareB.value;
-    renderDiff(a, b);
-    setStatus("Comparison rendered.");
   });
 
   document.getElementById("mw-audit-compare").addEventListener("click", () => {
