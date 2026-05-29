@@ -24,6 +24,7 @@ const CHANGE_EPSILON = 0.000001;
 const AUTO_SCROLL_STABLE_ITERATIONS = 3;
 const AUTO_SCROLL_MAX_ITERATIONS = 40;
 const AUTO_SCROLL_DELAY_MS = 450;
+const ROUTE_CHECK_INTERVAL_MS = 500;
 
 const STORAGE_KEYS = {
   snapshots: "mwSnapshots",
@@ -58,7 +59,12 @@ const state = {
   compareFilterReadsEl: null,
   compareFilterEarningsEl: null,
   diffContainerEl: null,
-  trendContainerEl: null
+  trendContainerEl: null,
+  lastSeenUrl: "",
+  routeCheckTimer: null,
+  routeWatcherStarted: false,
+  keyboardShortcutsWired: false,
+  runtimeMessagesWired: false
 };
 
 function isTargetPage() {
@@ -333,6 +339,31 @@ function extractStoryRows() {
   return dedupeStories(tableRows);
 }
 
+function hasAnyStatsMetricValueOnPage() {
+  const rows = Array.from(document.querySelectorAll("table tbody tr, table tr"));
+
+  for (const row of rows) {
+    const cells = Array.from(row.querySelectorAll("td, th"))
+      .map((cell) => sanitizeText(cell.textContent))
+      .filter(Boolean);
+
+    if (cells.length < 5) {
+      continue;
+    }
+
+    const presentations = parseNumber(cells[1]);
+    const views = parseNumber(cells[2]);
+    const reads = parseNumber(cells[3]);
+    const earnings = parseCurrency(cells[4]);
+
+    if (presentations !== null || views !== null || reads !== null || earnings !== null) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function buildSnapshot(rows, mode) {
   const capturedAt = nowIso();
   const stories = rows.map((row) => ({
@@ -374,11 +405,54 @@ function ensureTargetPage() {
   }
 }
 
+function syncPanelVisibilityToRoute() {
+  const wrapper = document.getElementById(PANEL_IDS.wrapper);
+  if (!wrapper) {
+    return;
+  }
+
+  if (isTargetPage()) {
+    wrapper.style.display = "";
+    return;
+  }
+
+  togglePanel(false);
+  wrapper.style.display = "none";
+}
+
+function startRouteWatcher() {
+  if (state.routeWatcherStarted) {
+    return;
+  }
+
+  state.routeWatcherStarted = true;
+  state.lastSeenUrl = window.location.href;
+
+  const checkForRouteChange = () => {
+    const currentUrl = window.location.href;
+    if (currentUrl === state.lastSeenUrl) {
+      return;
+    }
+    state.lastSeenUrl = currentUrl;
+    syncPanelVisibilityToRoute();
+  };
+
+  window.addEventListener("popstate", checkForRouteChange);
+  window.addEventListener("hashchange", checkForRouteChange);
+
+  state.routeCheckTimer = window.setInterval(checkForRouteChange, ROUTE_CHECK_INTERVAL_MS);
+}
+
 async function captureSnapshot(mode) {
   ensureTargetPage();
   setStatus("Capturing snapshot...");
 
   await autoScrollForDataRows();
+
+  if (!hasAnyStatsMetricValueOnPage()) {
+    throw new Error("Snapshot not saved: stats values (Presentations, Views, Reads, Earnings) are not visible on the page yet.");
+  }
+
   const rows = extractStoryRows();
   if (!rows.length) {
     throw new Error("No story rows found. Confirm you are logged into Medium and your stats page is loaded.");
@@ -1329,8 +1403,17 @@ function wirePanelEvents() {
 }
 
 function wireKeyboardShortcuts() {
+  if (state.keyboardShortcutsWired) {
+    return;
+  }
+  state.keyboardShortcutsWired = true;
+
   document.addEventListener("keydown", async (event) => {
     if (!(event.altKey && event.shiftKey)) {
+      return;
+    }
+
+    if (!isTargetPage()) {
       return;
     }
 
@@ -1367,6 +1450,11 @@ function wireKeyboardShortcuts() {
 }
 
 function wireRuntimeMessages() {
+  if (state.runtimeMessagesWired) {
+    return;
+  }
+  state.runtimeMessagesWired = true;
+
   if (!chrome.runtime || !chrome.runtime.onMessage) {
     return;
   }
@@ -1380,12 +1468,20 @@ function wireRuntimeMessages() {
         }
 
         if (message.action === "openPanel") {
+          if (!isTargetPage()) {
+            sendResponse({ ok: false, error: "Open https://medium.com/me/stats to use this extension." });
+            return;
+          }
           togglePanel(true);
           sendResponse({ ok: true });
           return;
         }
 
         if (message.action === "captureManualSnapshot") {
+          if (!isTargetPage()) {
+            sendResponse({ ok: false, error: "Open https://medium.com/me/stats to use this extension." });
+            return;
+          }
           togglePanel(true);
           await captureSnapshot("manual");
           sendResponse({ ok: true });
@@ -1393,6 +1489,10 @@ function wireRuntimeMessages() {
         }
 
         if (message.action === "focusComparison") {
+          if (!isTargetPage()) {
+            sendResponse({ ok: false, error: "Open https://medium.com/me/stats to use this extension." });
+            return;
+          }
           togglePanel(true);
           if (state.selectCompareA) {
             state.selectCompareA.focus();
@@ -1442,6 +1542,8 @@ async function init() {
   wirePanelEvents();
   wireKeyboardShortcuts();
   wireRuntimeMessages();
+  startRouteWatcher();
+  syncPanelVisibilityToRoute();
 
   await loadSnapshots();
   refreshPanelData();
