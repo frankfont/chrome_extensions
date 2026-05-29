@@ -26,9 +26,9 @@ This extension stores values as text and numbers. It does not take screenshots.
 - Automatic snapshot: once per day on the first visit to `https://medium.com/me/stats`.
 	- If at least one snapshot exists within the last 5 days, auto capture prefers a delta snapshot.
 	- Otherwise, auto capture creates a full snapshot.
-- Manual full snapshot: user can force a full snapshot from the `Capture Full Snapshot` button.
-- Manual delta snapshot: user can force a sparse snapshot from the `Capture Delta Snapshot` button.
-- Delta capture guard: delta snapshot requires at least one prior snapshot.
+- Manual snapshot: user triggers one `Capture Snapshot` button.
+	- Smart mode chooses delta when a recent snapshot exists (within 5 days).
+	- Smart mode chooses full when no prior snapshot exists or no recent snapshot exists.
 - Multiple manual snapshots per day are allowed.
 - Hybrid storage model:
 	- First snapshot of each day is stored as a full snapshot.
@@ -59,7 +59,6 @@ The panel includes an easy-access **Daily Changes Summary** near the top.
 - It shows only stories with actual numeric tracked changes.
 - It highlights Presentations, Views, Reads, and Earnings deltas for quick scanning.
 - Positive deltas are always prefixed with `+`.
-- Use the `Refresh` button in that section to re-render after new snapshots.
 
 ## Compare Dates Defaults
 

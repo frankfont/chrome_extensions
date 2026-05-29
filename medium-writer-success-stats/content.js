@@ -54,6 +54,7 @@ const state = {
   selectTrendStory: null,
   selectDeleteStory: null,
   selectDeleteTimestamp: null,
+  smartCaptureHintEl: null,
   statusEl: null,
   summaryEl: null,
   dailySummaryEl: null,
@@ -181,6 +182,37 @@ function formatSignedPercent(value) {
     return `-${abs}`;
   }
   return "0.0%";
+}
+
+function formatByteSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return "-";
+  }
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+
+  const kb = bytes / 1024;
+  if (kb < 1024) {
+    return `${kb.toFixed(kb < 10 ? 1 : 0)} KB`;
+  }
+
+  const mb = kb / 1024;
+  if (mb < 1024) {
+    return `${mb.toFixed(mb < 10 ? 1 : 0)} MB`;
+  }
+
+  const gb = mb / 1024;
+  return `${gb.toFixed(gb < 10 ? 1 : 0)} GB`;
+}
+
+function estimateSnapshotsStorageBytes() {
+  try {
+    const json = JSON.stringify(state.snapshots || []);
+    return new TextEncoder().encode(json).length;
+  } catch {
+    return 0;
+  }
 }
 
 function parseScaledNumber(text) {
@@ -320,14 +352,9 @@ function setStatus(message, isError = false) {
 function setSnapshotCaptureUiBusy(isBusy, activeButtonId = "") {
   const buttonConfigs = [
     {
-      id: "mw-manual-snapshot-full",
-      idleText: "Capture Full Snapshot",
-      busyText: "Creating full snapshot..."
-    },
-    {
-      id: "mw-manual-snapshot-delta",
-      idleText: "Capture Delta Snapshot",
-      busyText: "Creating delta snapshot..."
+      id: "mw-manual-snapshot-smart",
+      idleText: "Capture Snapshot",
+      busyText: "Creating smart snapshot..."
     }
   ];
 
@@ -585,6 +612,39 @@ function hasSnapshotWithinLookbackDays(dayCount, referenceIso = nowIso()) {
     }
     return referenceMs - snapshotMs <= lookbackMs;
   });
+}
+
+function getSmartCaptureDecision(referenceIso = nowIso()) {
+  if (!hasAnyPriorSnapshot()) {
+    return {
+      mode: "full",
+      modeLabel: "Full",
+      reason: "no prior snapshot found"
+    };
+  }
+
+  if (hasSnapshotWithinLookbackDays(5, referenceIso)) {
+    return {
+      mode: "sparse",
+      modeLabel: "Delta",
+      reason: "recent snapshot found within 5 days"
+    };
+  }
+
+  return {
+    mode: "full",
+    modeLabel: "Full",
+    reason: "no snapshot found in the last 5 days"
+  };
+}
+
+function updateSmartCaptureHint() {
+  if (!state.smartCaptureHintEl) {
+    return;
+  }
+
+  const decision = getSmartCaptureDecision();
+  state.smartCaptureHintEl.textContent = `Mode: Smart -> ${decision.modeLabel} (${decision.reason})`;
 }
 
 function isSparseSnapshot(snapshot) {
@@ -1759,9 +1819,11 @@ function refreshSnapshotSummary() {
   }
   const count = state.snapshots.length;
   const latest = count ? state.snapshots[count - 1] : null;
+  const estimatedBytes = estimateSnapshotsStorageBytes();
   state.summaryEl.innerHTML = `
     <div><strong>Snapshots:</strong> ${count}</div>
     <div><strong>Latest:</strong> ${latest ? formatTimestamp(latest.capturedAt) : "None"}</div>
+    <div><strong>Storage space used:</strong> ${formatByteSize(estimatedBytes)}</div>
   `;
 }
 
@@ -1936,6 +1998,7 @@ function refreshSelectOptions() {
 
 function refreshPanelData() {
   refreshSnapshotSummary();
+  updateSmartCaptureHint();
   refreshSelectOptions();
   renderDailyChangesSummary();
   updateLauncherSignal();
@@ -2063,6 +2126,24 @@ function createPanelMarkup() {
         border: 1px solid #ddd;
         padding: 8px;
         margin-bottom: 8px;
+      }
+      #${PANEL_IDS.panel} .mw-snapshot-controls {
+        justify-content: space-between;
+        align-items: flex-start;
+      }
+      #${PANEL_IDS.panel} .mw-snapshot-actions {
+        margin-bottom: 0;
+      }
+      #${PANEL_IDS.panel} .mw-snapshot-inline-summary {
+        display: none;
+        color: #333;
+        text-align: right;
+        min-width: 180px;
+        font-size: 11px;
+        line-height: 1.4;
+      }
+      #${PANEL_IDS.panel}.mw-expanded .mw-snapshot-inline-summary {
+        display: block;
       }
       #${PANEL_IDS.panel} .mw-section-title {
         font-weight: 700;
@@ -2209,12 +2290,10 @@ function createPanelMarkup() {
       </div>
 
       <div id="mw-status" class="mw-status">Ready.</div>
-      <div id="mw-summary" class="mw-summary"></div>
 
       <div class="mw-section" id="mw-daily-summary-section">
         <div class="mw-row" style="justify-content: space-between; align-items: center;">
           <div class="mw-section-title" style="margin-bottom: 0;">Daily Changes Summary</div>
-          <button id="mw-refresh-daily-summary" type="button">Refresh</button>
         </div>
         <div class="mw-checkbox-row" aria-label="Daily summary metric filters">
           <label><input id="mw-filter-presentations" type="checkbox" checked/>Presentations</label>
@@ -2227,13 +2306,15 @@ function createPanelMarkup() {
 
       <div class="mw-section">
         <div class="mw-section-title">Snapshots</div>
-        <div class="mw-row">
-          <button id="mw-manual-snapshot-full" type="button">Capture Full Snapshot</button>
-          <button id="mw-manual-snapshot-delta" type="button">Capture Delta Snapshot</button>
-          <button id="mw-run-default-compare" type="button">Run Default Comparison</button>
-          <button id="mw-open-transfer-data" type="button">Transfer Data</button>
-          <button id="mw-prune-snapshots" type="button">Prune Snapshots</button>
+        <div class="mw-row mw-snapshot-controls">
+          <div class="mw-row mw-snapshot-actions">
+            <button id="mw-manual-snapshot-smart" type="button">Capture Snapshot</button>
+            <button id="mw-open-transfer-data" type="button">Transfer Data</button>
+            <button id="mw-prune-snapshots" type="button">Prune Snapshots</button>
+          </div>
+          <div id="mw-summary" class="mw-snapshot-inline-summary"></div>
         </div>
+        <div id="mw-smart-capture-hint" class="mw-empty">Mode: Smart</div>
       </div>
 
       <div class="mw-section" id="mw-transfer-section" style="display: none;">
@@ -2258,6 +2339,7 @@ function createPanelMarkup() {
             <select id="mw-compare-a"></select>
             <select id="mw-compare-b-day"></select>
             <select id="mw-compare-b"></select>
+          <button id="mw-run-default-compare" type="button">Run Default Comparison</button>
           <button id="mw-audit-compare" type="button">Audit Snapshot Pair</button>
           <button id="mw-export-compare-json" type="button">Export A/B JSON</button>
         </div>
@@ -2326,6 +2408,7 @@ function wirePanelEvents() {
   state.trendContainerEl = document.getElementById("mw-trend");
   state.selectDeleteStory = document.getElementById("mw-delete-story");
   state.selectDeleteTimestamp = document.getElementById("mw-delete-timestamp");
+  state.smartCaptureHintEl = document.getElementById("mw-smart-capture-hint");
   state.transferSectionEl = document.getElementById("mw-transfer-section");
   setAuditSectionVisible(false);
   setTransferSectionVisible(false);
@@ -2333,10 +2416,6 @@ function wirePanelEvents() {
   launcher.addEventListener("click", () => togglePanel(!isPanelVisible()));
   document.getElementById("mw-toggle-panel-size").addEventListener("click", () => togglePanelExpanded());
   document.getElementById("mw-close-panel").addEventListener("click", () => togglePanel(false));
-  document.getElementById("mw-refresh-daily-summary").addEventListener("click", () => {
-    renderDailyChangesSummary();
-    setStatus("Daily changes summary refreshed.");
-  });
 
   [
     state.dailyFilterPresentationsEl,
@@ -2366,19 +2445,12 @@ function wirePanelEvents() {
     });
   });
 
-  document.getElementById("mw-manual-snapshot-full").addEventListener("click", async () => {
+  document.getElementById("mw-manual-snapshot-smart").addEventListener("click", async () => {
     try {
-      await captureSnapshot("manual", "full", "mw-manual-snapshot-full");
+      const decision = getSmartCaptureDecision();
+      await captureSnapshot("manual", decision.mode, "mw-manual-snapshot-smart");
     } catch (err) {
-      setStatus(err.message || "Manual full snapshot failed.", true);
-    }
-  });
-
-  document.getElementById("mw-manual-snapshot-delta").addEventListener("click", async () => {
-    try {
-      await captureSnapshot("manual", "sparse", "mw-manual-snapshot-delta");
-    } catch (err) {
-      setStatus(err.message || "Manual delta snapshot failed.", true);
+      setStatus(err.message || "Manual snapshot failed.", true);
     }
   });
 
@@ -2616,8 +2688,8 @@ async function runAutomaticSnapshotIfNeeded() {
   }
 
   try {
-    const preferredStorageMode = hasSnapshotWithinLookbackDays(5) ? "sparse" : "full";
-    await captureSnapshot("auto", preferredStorageMode);
+    const decision = getSmartCaptureDecision();
+    await captureSnapshot("auto", decision.mode);
     await setStorage({
       [STORAGE_KEYS.lastAutoSnapshotDate]: today
     });
