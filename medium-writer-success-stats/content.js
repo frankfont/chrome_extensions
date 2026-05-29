@@ -66,7 +66,8 @@ const state = {
   routeCheckTimer: null,
   routeWatcherStarted: false,
   keyboardShortcutsWired: false,
-  runtimeMessagesWired: false
+  runtimeMessagesWired: false,
+  transferSectionEl: null
 };
 
 function setAuditSectionVisible(visible) {
@@ -74,6 +75,13 @@ function setAuditSectionVisible(visible) {
     return;
   }
   state.auditSectionEl.style.display = visible ? "block" : "none";
+}
+
+function setTransferSectionVisible(visible) {
+  if (!state.transferSectionEl) {
+    return;
+  }
+  state.transferSectionEl.style.display = visible ? "block" : "none";
 }
 
 function isTargetPage() {
@@ -1081,6 +1089,108 @@ async function exportSelectedSnapshotsJson(baseId, targetId) {
   );
 }
 
+async function exportAllSnapshotsJson() {
+  const result = await getStorage([STORAGE_KEYS.snapshots, STORAGE_KEYS.lastAutoSnapshotDate]);
+  const payload = {
+    exportedAt: nowIso(),
+    mwSnapshots: Array.isArray(result[STORAGE_KEYS.snapshots]) ? result[STORAGE_KEYS.snapshots] : [],
+    mwLastAutoSnapshotDate: result[STORAGE_KEYS.lastAutoSnapshotDate] || ""
+  };
+
+  const json = JSON.stringify(payload, null, 2);
+  const outputEl = document.getElementById("mw-transfer-json-output");
+  if (outputEl) {
+    outputEl.value = json;
+  }
+
+  let copied = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(json);
+      copied = true;
+    } catch {
+      copied = false;
+    }
+  }
+
+  if (!copied && outputEl) {
+    outputEl.focus();
+    outputEl.select();
+  }
+
+  setStatus(
+    copied
+      ? "All snapshots exported and copied to clipboard."
+      : "All snapshots exported. Clipboard unavailable; copy from the text box.",
+    false
+  );
+}
+
+async function importAllSnapshotsJson(rawJson) {
+  if (!rawJson || !rawJson.trim()) {
+    throw new Error("Paste exported JSON into the box before importing.");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    throw new Error("Import JSON is invalid.");
+  }
+
+  const importedSnapshots = Array.isArray(parsed.mwSnapshots) ? parsed.mwSnapshots : [];
+  const importedLastAutoDate = parsed.mwLastAutoSnapshotDate || "";
+
+  await setStorage({
+    [STORAGE_KEYS.snapshots]: importedSnapshots,
+    [STORAGE_KEYS.lastAutoSnapshotDate]: importedLastAutoDate
+  });
+
+  state.snapshots = importedSnapshots;
+  state.snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+  refreshPanelData();
+  setStatus(`Imported ${state.snapshots.length} snapshots.`);
+}
+
+async function pruneSnapshotsKeepEarliestPerDay() {
+  if (!state.snapshots.length) {
+    setStatus("No snapshots available to prune.");
+    return;
+  }
+
+  const sorted = [...state.snapshots].sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+  const earliestByDay = new Map();
+
+  sorted.forEach((snapshot) => {
+    const dayKey = toDateKey(snapshot.capturedAt);
+    if (!earliestByDay.has(dayKey)) {
+      earliestByDay.set(dayKey, snapshot);
+    }
+  });
+
+  const pruned = Array.from(earliestByDay.values()).sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+  const beforeCount = state.snapshots.length;
+  const afterCount = pruned.length;
+  const removedCount = beforeCount - afterCount;
+
+  if (removedCount <= 0) {
+    setStatus("No duplicate same-day snapshots found to prune.");
+    return;
+  }
+
+  const confirmMessage = `Prune Snapshots will permanently delete ${removedCount} snapshot(s) and keep ${afterCount} earliest-of-day snapshot(s).\n\nDo you want to continue?`;
+  const confirmed = window.confirm(confirmMessage);
+  if (!confirmed) {
+    setStatus("Prune canceled.");
+    return;
+  }
+
+  state.snapshots = pruned;
+  await persistSnapshots();
+  refreshPanelData();
+  setStatus(`Pruned snapshots: removed ${removedCount}, kept ${afterCount}.`);
+}
+
 function getAllStoryNames() {
   const names = new Set();
   state.snapshots.forEach((snapshot) => {
@@ -1520,7 +1630,18 @@ function createPanelMarkup() {
         <div class="mw-row">
           <button id="mw-manual-snapshot" type="button">Capture Manual Snapshot</button>
           <button id="mw-run-default-compare" type="button">Run Default Comparison</button>
+          <button id="mw-open-transfer-data" type="button">Transfer Data</button>
+          <button id="mw-prune-snapshots" type="button">Prune Snapshots</button>
         </div>
+      </div>
+
+      <div class="mw-section" id="mw-transfer-section" style="display: none;">
+        <div class="mw-section-title">Transfer Data</div>
+        <div class="mw-row">
+          <button id="mw-export-all" type="button">Export All</button>
+          <button id="mw-import-all" type="button">Import All</button>
+        </div>
+        <textarea id="mw-transfer-json-output" class="mw-export-output" placeholder="Exported snapshot data appears here. Paste exported JSON here, then click Import All."></textarea>
       </div>
 
       <div class="mw-section">
@@ -1556,7 +1677,8 @@ function createPanelMarkup() {
 
       <div class="mw-section">
         <div class="mw-section-title">Delete Data</div>
-        <div class="mw-row">
+        <!-- Delete Story controls are intentionally hidden for now; keep markup for future restore. -->
+        <div class="mw-row" style="display: none;" aria-hidden="true">
           <select id="mw-delete-story"></select>
           <button id="mw-delete-story-btn" type="button">Delete Story</button>
         </div>
@@ -1600,7 +1722,9 @@ function wirePanelEvents() {
   state.trendContainerEl = document.getElementById("mw-trend");
   state.selectDeleteStory = document.getElementById("mw-delete-story");
   state.selectDeleteTimestamp = document.getElementById("mw-delete-timestamp");
+  state.transferSectionEl = document.getElementById("mw-transfer-section");
   setAuditSectionVisible(false);
+  setTransferSectionVisible(false);
 
   launcher.addEventListener("click", () => togglePanel(!isPanelVisible()));
   document.getElementById("mw-toggle-panel-size").addEventListener("click", () => togglePanelExpanded());
@@ -1656,6 +1780,37 @@ function wirePanelEvents() {
     state.selectCompareB.value = b;
     renderDiff(a, b);
     setStatus("Default comparison rendered.");
+  });
+
+  document.getElementById("mw-open-transfer-data").addEventListener("click", () => {
+    setTransferSectionVisible(true);
+    setStatus("Transfer Data section opened.");
+  });
+
+  document.getElementById("mw-prune-snapshots").addEventListener("click", async () => {
+    try {
+      await pruneSnapshotsKeepEarliestPerDay();
+    } catch (err) {
+      setStatus(err.message || "Prune snapshots failed.", true);
+    }
+  });
+
+  document.getElementById("mw-export-all").addEventListener("click", async () => {
+    try {
+      await exportAllSnapshotsJson();
+    } catch (err) {
+      setStatus(err.message || "Export all failed.", true);
+    }
+  });
+
+  document.getElementById("mw-import-all").addEventListener("click", async () => {
+    try {
+      const outputEl = document.getElementById("mw-transfer-json-output");
+      const raw = outputEl ? outputEl.value : "";
+      await importAllSnapshotsJson(raw);
+    } catch (err) {
+      setStatus(err.message || "Import all failed.", true);
+    }
   });
 
   document.getElementById("mw-compare-run").addEventListener("click", () => {

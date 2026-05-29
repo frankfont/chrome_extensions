@@ -1,5 +1,7 @@
 # Medium Reader Stats Info
 
+DEPRECATED CHROME EXTENSION -- Use the new medium-writer-success-stats extension instead!
+
 A Chrome extension for Medium authors that captures and compares story performance snapshots from the Medium stats page.
 
 Target page: https://medium.com/me/stats

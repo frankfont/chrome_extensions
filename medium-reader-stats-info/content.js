@@ -1081,6 +1081,69 @@ async function exportSelectedSnapshotsJson(baseId, targetId) {
   );
 }
 
+async function exportAllSnapshotsJson() {
+  const result = await getStorage([STORAGE_KEYS.snapshots, STORAGE_KEYS.lastAutoSnapshotDate]);
+  const payload = {
+    exportedAt: nowIso(),
+    mwSnapshots: Array.isArray(result[STORAGE_KEYS.snapshots]) ? result[STORAGE_KEYS.snapshots] : [],
+    mwLastAutoSnapshotDate: result[STORAGE_KEYS.lastAutoSnapshotDate] || ""
+  };
+
+  const json = JSON.stringify(payload, null, 2);
+  const outputEl = document.getElementById("mw-transfer-json-output");
+  if (outputEl) {
+    outputEl.value = json;
+  }
+
+  let copied = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(json);
+      copied = true;
+    } catch {
+      copied = false;
+    }
+  }
+
+  if (!copied && outputEl) {
+    outputEl.focus();
+    outputEl.select();
+  }
+
+  setStatus(
+    copied
+      ? "All snapshots exported and copied to clipboard."
+      : "All snapshots exported. Clipboard unavailable; copy from the text box.",
+    false
+  );
+}
+
+async function importAllSnapshotsJson(rawJson) {
+  if (!rawJson || !rawJson.trim()) {
+    throw new Error("Paste exported JSON into the box before importing.");
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(rawJson);
+  } catch {
+    throw new Error("Import JSON is invalid.");
+  }
+
+  const importedSnapshots = Array.isArray(parsed.mwSnapshots) ? parsed.mwSnapshots : [];
+  const importedLastAutoDate = parsed.mwLastAutoSnapshotDate || "";
+
+  await setStorage({
+    [STORAGE_KEYS.snapshots]: importedSnapshots,
+    [STORAGE_KEYS.lastAutoSnapshotDate]: importedLastAutoDate
+  });
+
+  state.snapshots = importedSnapshots;
+  state.snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+  refreshPanelData();
+  setStatus(`Imported ${state.snapshots.length} snapshots.`);
+}
+
 function getAllStoryNames() {
   const names = new Set();
   state.snapshots.forEach((snapshot) => {
@@ -1320,7 +1383,7 @@ function createPanelMarkup() {
       #${PANEL_IDS.launcher} {
         position: fixed;
         right: 16px;
-        bottom: 16px;
+        bottom: 68px;
         width: 44px;
         height: 44px;
         border-radius: 22px;
@@ -1524,6 +1587,15 @@ function createPanelMarkup() {
       </div>
 
       <div class="mw-section">
+        <div class="mw-section-title">Transfer Data</div>
+        <div class="mw-row">
+          <button id="mw-export-all" type="button">Export All</button>
+          <button id="mw-import-all" type="button">Import All</button>
+        </div>
+        <textarea id="mw-transfer-json-output" class="mw-export-output" placeholder="Exported snapshot data appears here. Paste exported JSON here, then click Import All."></textarea>
+      </div>
+
+      <div class="mw-section">
         <div class="mw-section-title">Compare Any Two</div>
         <div class="mw-checkbox-row" aria-label="Compare metric filters">
           <label><input id="mw-compare-filter-presentations" type="checkbox" checked/>Presentations</label>
@@ -1556,7 +1628,8 @@ function createPanelMarkup() {
 
       <div class="mw-section">
         <div class="mw-section-title">Delete Data</div>
-        <div class="mw-row">
+        <!-- Delete Story controls are intentionally hidden for now; keep markup for future restore. -->
+        <div class="mw-row" style="display: none;" aria-hidden="true">
           <select id="mw-delete-story"></select>
           <button id="mw-delete-story-btn" type="button">Delete Story</button>
         </div>
@@ -1656,6 +1729,24 @@ function wirePanelEvents() {
     state.selectCompareB.value = b;
     renderDiff(a, b);
     setStatus("Default comparison rendered.");
+  });
+
+  document.getElementById("mw-export-all").addEventListener("click", async () => {
+    try {
+      await exportAllSnapshotsJson();
+    } catch (err) {
+      setStatus(err.message || "Export all failed.", true);
+    }
+  });
+
+  document.getElementById("mw-import-all").addEventListener("click", async () => {
+    try {
+      const outputEl = document.getElementById("mw-transfer-json-output");
+      const raw = outputEl ? outputEl.value : "";
+      await importAllSnapshotsJson(raw);
+    } catch (err) {
+      setStatus(err.message || "Import all failed.", true);
+    }
   });
 
   document.getElementById("mw-compare-run").addEventListener("click", () => {
