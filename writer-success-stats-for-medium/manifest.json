@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Writer Success Stats for Medium",
+  "version": "1.0.0",
+  "description": "Captures and compares Medium story stats snapshots.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://medium.com/me/stats*"],
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "action": {
+    "default_title": "Writer Success Stats for Medium",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://medium.com/me/stats*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["author.png"],
+      "matches": ["https://medium.com/*"]
+    }
+  ]
+}

@@ -1,8 +1,4 @@
-# Medium Writer Success Stats
-
-> DEPRECATED: This extension folder is deprecated.
->
-> Use `writer-success-stats-for-medium` instead.
+# Writer Success Stats for Medium
 
 A Chrome extension for Medium authors that captures and compares story performance snapshots from the Medium stats page.
 
@@ -170,7 +166,7 @@ The extension should show clear user-facing errors for cases such as:
 1. Open Chrome and go to `chrome://extensions`.
 2. Enable Developer mode.
 3. Click Load unpacked.
-4. Select the `medium-writer-success-stats` folder.
+4. Select the `writer-success-stats-for-medium` folder.
 5. Visit `https://medium.com/me/stats` while logged into Medium.
 6. Open the extension panel from the toolbar icon or keyboard shortcut to create manual snapshots and run comparisons.
 7. Use `Run Default Comparison` for full-range compare or Daily Changes Summary for day-level change detection.
