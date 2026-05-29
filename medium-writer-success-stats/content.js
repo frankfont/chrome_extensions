@@ -269,12 +269,21 @@ function renderStoryTitleHtml(storyName, storyUrl) {
   return `<a class="mw-story-link" href="${storyUrl}" target="_blank" rel="noopener noreferrer" title="Open stats post page">${title}</a>`;
 }
 
+function normalizeExtensionRuntimeErrorMessage(rawMessage) {
+  const text = String(rawMessage || "");
+  const lowered = text.toLowerCase();
+  if (lowered.includes("extension context invalidated") || lowered.includes("context invalidated")) {
+    return "Extension was reloaded or updated. Refresh this page to reinitialize the panel.";
+  }
+  return text || "Extension runtime error.";
+}
+
 function getStorage(keys) {
   return new Promise((resolve, reject) => {
     chrome.storage.local.get(keys, (result) => {
       const err = chrome.runtime.lastError;
       if (err) {
-        reject(new Error(err.message));
+        reject(new Error(normalizeExtensionRuntimeErrorMessage(err.message)));
         return;
       }
       resolve(result);
@@ -287,7 +296,7 @@ function setStorage(payload) {
     chrome.storage.local.set(payload, () => {
       const err = chrome.runtime.lastError;
       if (err) {
-        reject(new Error(err.message));
+        reject(new Error(normalizeExtensionRuntimeErrorMessage(err.message)));
         return;
       }
       resolve();
@@ -304,14 +313,31 @@ function setStatus(message, isError = false) {
   state.statusEl.style.color = isError ? "#8f1111" : "#0f5132";
 }
 
-function setSnapshotCaptureUiBusy(isBusy) {
-  const button = document.getElementById("mw-manual-snapshot");
-  if (!button) {
-    return;
-  }
-  button.disabled = !!isBusy;
-  button.classList.toggle("mw-busy-action", !!isBusy);
-  button.textContent = isBusy ? "Creating snapshot now..." : "Capture Manual Snapshot";
+function setSnapshotCaptureUiBusy(isBusy, activeButtonId = "") {
+  const buttonConfigs = [
+    {
+      id: "mw-manual-snapshot-full",
+      idleText: "Capture Full Snapshot",
+      busyText: "Creating full snapshot..."
+    },
+    {
+      id: "mw-manual-snapshot-delta",
+      idleText: "Capture Delta Snapshot",
+      busyText: "Creating delta snapshot..."
+    }
+  ];
+
+  buttonConfigs.forEach((config) => {
+    const button = document.getElementById(config.id);
+    if (!button) {
+      return;
+    }
+
+    const isActive = !!isBusy && activeButtonId === config.id;
+    button.disabled = !!isBusy;
+    button.classList.toggle("mw-busy-action", isActive);
+    button.textContent = isActive ? config.busyText : config.idleText;
+  });
 
   if (state.statusEl) {
     state.statusEl.classList.toggle("mw-status-busy", !!isBusy);
@@ -485,6 +511,26 @@ function findLatestSnapshot() {
   return state.snapshots[state.snapshots.length - 1];
 }
 
+function hasAnyPriorSnapshot() {
+  return state.snapshots.length > 0;
+}
+
+function hasSnapshotWithinLookbackDays(dayCount, referenceIso = nowIso()) {
+  const referenceMs = new Date(referenceIso).getTime();
+  if (Number.isNaN(referenceMs)) {
+    return false;
+  }
+
+  const lookbackMs = dayCount * 24 * 60 * 60 * 1000;
+  return state.snapshots.some((snapshot) => {
+    const snapshotMs = new Date(snapshot.capturedAt).getTime();
+    if (Number.isNaN(snapshotMs) || snapshotMs > referenceMs) {
+      return false;
+    }
+    return referenceMs - snapshotMs <= lookbackMs;
+  });
+}
+
 function isSparseSnapshot(snapshot) {
   return !!snapshot && snapshot.storageMode === "sparse";
 }
@@ -521,30 +567,24 @@ function getSnapshotCacheVersion() {
 
 function rebuildMaterializedSnapshotCache() {
   const cache = new Map();
-  let activeDayKey = "";
-  let dayStoryMap = new Map();
+  let materializedStoryMap = new Map();
+  let hasAnchor = false;
 
   state.snapshots.forEach((snapshot) => {
-    const snapshotDayKey = toDateKey(snapshot.capturedAt);
-    if (snapshotDayKey !== activeDayKey) {
-      activeDayKey = snapshotDayKey;
-      dayStoryMap = new Map();
-    }
-
     const normalizedStories = Array.isArray(snapshot.stories)
       ? snapshot.stories
           .map((story) => normalizeStoryRecord(story, snapshot.capturedAt))
           .filter(Boolean)
       : [];
 
-    if (isSparseSnapshot(snapshot) && dayStoryMap.size > 0) {
+    if (isSparseSnapshot(snapshot) && hasAnchor) {
       normalizedStories.forEach((story) => {
         const key = getStoryKey(story);
         if (story.removed) {
-          dayStoryMap.delete(key);
+          materializedStoryMap.delete(key);
           return;
         }
-        dayStoryMap.set(key, {
+        materializedStoryMap.set(key, {
           ...story,
           removed: false,
           timestamp: snapshot.capturedAt,
@@ -552,21 +592,22 @@ function rebuildMaterializedSnapshotCache() {
         });
       });
     } else {
-      dayStoryMap = new Map();
+      materializedStoryMap = new Map();
       normalizedStories.forEach((story) => {
         if (story.removed) {
           return;
         }
-        dayStoryMap.set(getStoryKey(story), {
+        materializedStoryMap.set(getStoryKey(story), {
           ...story,
           removed: false,
           timestamp: snapshot.capturedAt,
           key: `${story.storyName}__${snapshot.capturedAt}`
         });
       });
+      hasAnchor = true;
     }
 
-    const materializedStories = Array.from(dayStoryMap.values()).sort((a, b) => a.storyName.localeCompare(b.storyName));
+    const materializedStories = Array.from(materializedStoryMap.values()).sort((a, b) => a.storyName.localeCompare(b.storyName));
     cache.set(snapshot.id, {
       ...snapshot,
       storageMode: snapshot.storageMode || "full",
@@ -628,7 +669,7 @@ function findReadDecreasesComparedToSnapshot(rows, previousSnapshot) {
   return decreases;
 }
 
-function buildSnapshot(rows, mode) {
+function buildSnapshot(rows, mode, preferredStorageMode = "auto") {
   const capturedAt = nowIso();
   const fullStories = rows.map((row) => ({
     key: `${row.storyName}__${capturedAt}`,
@@ -643,11 +684,15 @@ function buildSnapshot(rows, mode) {
   }));
 
   const latestSnapshot = findLatestSnapshot();
-  const sameDayLatest = latestSnapshot && toDateKey(latestSnapshot.capturedAt) === toDateKey(capturedAt)
+  const latestMaterialized = latestSnapshot
     ? getSnapshotById(latestSnapshot.id)
     : null;
+  const sameDayLatest = latestMaterialized && toDateKey(latestMaterialized.capturedAt) === toDateKey(capturedAt)
+    ? latestMaterialized
+    : null;
+  const baselineSnapshot = preferredStorageMode === "sparse" ? latestMaterialized : sameDayLatest;
 
-  if (!sameDayLatest) {
+  if (preferredStorageMode === "full" || !baselineSnapshot) {
     return {
       id: capturedAt,
       mode,
@@ -658,7 +703,7 @@ function buildSnapshot(rows, mode) {
     };
   }
 
-  const previousMap = buildStoryMap(sameDayLatest);
+  const previousMap = buildStoryMap(baselineSnapshot);
   const currentMap = new Map();
   fullStories.forEach((story) => {
     currentMap.set(getStoryKey(story), story);
@@ -776,12 +821,21 @@ function startRouteWatcher() {
   state.routeCheckTimer = window.setInterval(checkForRouteChange, ROUTE_CHECK_INTERVAL_MS);
 }
 
-async function captureSnapshot(mode) {
+async function captureSnapshot(mode, preferredStorageMode = "auto", triggerButtonId = "") {
   ensureTargetPage();
-  setStatus("Creating snapshot now...");
-  setSnapshotCaptureUiBusy(true);
+  const captureLabel = preferredStorageMode === "full"
+    ? "full snapshot"
+    : preferredStorageMode === "sparse"
+      ? "delta snapshot"
+      : "snapshot";
+  setStatus(`Creating ${captureLabel} now...`);
+  setSnapshotCaptureUiBusy(true, triggerButtonId);
 
   try {
+    if (preferredStorageMode === "sparse" && !hasAnyPriorSnapshot()) {
+      throw new Error("Delta snapshot requires at least one prior snapshot. Capture a full snapshot first.");
+    }
+
     await autoScrollForDataRows();
 
     if (!hasAnyStatsMetricValueOnPage()) {
@@ -808,7 +862,7 @@ async function captureSnapshot(mode) {
       );
     }
 
-    const snapshot = buildSnapshot(rows, mode);
+    const snapshot = buildSnapshot(rows, mode, preferredStorageMode);
     state.snapshots.push(snapshot);
     state.snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
     await persistSnapshots();
@@ -1174,7 +1228,6 @@ function renderDiff(baseId, targetId) {
       <td>${formatCurrency(row.earningsA)}</td>
       <td>${formatCurrency(row.earningsB)}</td>
       <td class="${toneClass(row.earningsDelta)}">${formatSignedCurrency(row.earningsDelta)}</td>
-      <td class="${toneClass(row.earningsPct)}">${formatSignedPercent(row.earningsPct)}</td>
     </tr>
   `).join("");
 
@@ -1195,11 +1248,10 @@ function renderDiff(baseId, targetId) {
             <th>Earnings A</th>
             <th>Earnings B</th>
             <th>Earnings Δ</th>
-            <th>Earnings %</th>
           </tr>
         </thead>
         <tbody>
-          ${tableRows || "<tr><td colspan='12'>No comparable rows found.</td></tr>"}
+          ${tableRows || "<tr><td colspan='11'>No comparable rows found.</td></tr>"}
         </tbody>
       </table>
     </div>
@@ -1545,7 +1597,7 @@ function togglePanelExpanded() {
   }
 
   const expanded = panel.classList.toggle("mw-expanded");
-  button.textContent = expanded ? "Collapse" : "Expand";
+  button.textContent = expanded ? ">> Collapse" : "<< Expand";
   button.title = expanded ? "Collapse panel width" : "Expand panel width";
 }
 
@@ -1999,8 +2051,8 @@ function createPanelMarkup() {
           <a class="mw-profile-link" href="https://medium.com/@frankfont123" target="_blank" rel="noopener noreferrer" title="Open @frankfont123 on Medium">
             <img src="${chrome.runtime.getURL("author.png")}" alt="Frank Font profile" />
           </a>
-          <button id="mw-toggle-panel-size" type="button" title="Expand panel width">Expand</button>
-          <button id="mw-close-panel" type="button">Close</button>
+          <button id="mw-toggle-panel-size" type="button" title="Expand panel width"><< Expand</button>
+          <button id="mw-close-panel" type="button" title="Close panel" aria-label="Close panel">X</button>
         </div>
       </div>
 
@@ -2024,7 +2076,8 @@ function createPanelMarkup() {
       <div class="mw-section">
         <div class="mw-section-title">Snapshots</div>
         <div class="mw-row">
-          <button id="mw-manual-snapshot" type="button">Capture Manual Snapshot</button>
+          <button id="mw-manual-snapshot-full" type="button">Capture Full Snapshot</button>
+          <button id="mw-manual-snapshot-delta" type="button">Capture Delta Snapshot</button>
           <button id="mw-run-default-compare" type="button">Run Default Comparison</button>
           <button id="mw-open-transfer-data" type="button">Transfer Data</button>
           <button id="mw-prune-snapshots" type="button">Prune Snapshots</button>
@@ -2162,11 +2215,19 @@ function wirePanelEvents() {
     });
   });
 
-  document.getElementById("mw-manual-snapshot").addEventListener("click", async () => {
+  document.getElementById("mw-manual-snapshot-full").addEventListener("click", async () => {
     try {
-      await captureSnapshot("manual");
+      await captureSnapshot("manual", "full", "mw-manual-snapshot-full");
     } catch (err) {
-      setStatus(err.message || "Manual snapshot failed.", true);
+      setStatus(err.message || "Manual full snapshot failed.", true);
+    }
+  });
+
+  document.getElementById("mw-manual-snapshot-delta").addEventListener("click", async () => {
+    try {
+      await captureSnapshot("manual", "sparse", "mw-manual-snapshot-delta");
+    } catch (err) {
+      setStatus(err.message || "Manual delta snapshot failed.", true);
     }
   });
 
@@ -2297,7 +2358,7 @@ function wireKeyboardShortcuts() {
       event.preventDefault();
       togglePanel(true);
       try {
-        await captureSnapshot("manual");
+        await captureSnapshot("manual", "auto");
       } catch (err) {
         setStatus(err.message || "Shortcut snapshot failed.", true);
       }
@@ -2359,7 +2420,7 @@ function wireRuntimeMessages() {
             return;
           }
           togglePanel(true);
-          await captureSnapshot("manual");
+          await captureSnapshot("manual", "auto");
           sendResponse({ ok: true });
           return;
         }
@@ -2397,7 +2458,8 @@ async function runAutomaticSnapshotIfNeeded() {
   }
 
   try {
-    await captureSnapshot("auto");
+    const preferredStorageMode = hasSnapshotWithinLookbackDays(5) ? "sparse" : "full";
+    await captureSnapshot("auto", preferredStorageMode);
     await setStorage({
       [STORAGE_KEYS.lastAutoSnapshotDate]: today
     });

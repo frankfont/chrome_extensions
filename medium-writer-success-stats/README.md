@@ -24,7 +24,11 @@ This extension stores values as text and numbers. It does not take screenshots.
 ## Snapshot Behavior
 
 - Automatic snapshot: once per day on the first visit to `https://medium.com/me/stats`.
-- Manual snapshot: user can trigger a snapshot from the extension popup.
+	- If at least one snapshot exists within the last 5 days, auto capture prefers a delta snapshot.
+	- Otherwise, auto capture creates a full snapshot.
+- Manual full snapshot: user can force a full snapshot from the `Capture Full Snapshot` button.
+- Manual delta snapshot: user can force a sparse snapshot from the `Capture Delta Snapshot` button.
+- Delta capture guard: delta snapshot requires at least one prior snapshot.
 - Multiple manual snapshots per day are allowed.
 - Hybrid storage model:
 	- First snapshot of each day is stored as a full snapshot.
