@@ -1123,33 +1123,105 @@ function buildStoryMap(snapshot) {
   return map;
 }
 
+function normalizeComparisonStoryName(storyName) {
+  return sanitizeText(formatStoryTitleForDisplay(storyName || "")).toLowerCase();
+}
+
+function getComparisonIdentity(story) {
+  const rawStoryId = String(story && story.storyId ? story.storyId : "").trim();
+  const urlStoryId = getStoryIdFromUrl(story && story.mediumUrl ? story.mediumUrl : "");
+  const storyId = rawStoryId || urlStoryId || "";
+
+  let urlKey = "";
+  const statsUrl = getStatsPostUrl(story);
+  if (statsUrl) {
+    try {
+      const parsed = new URL(statsUrl);
+      urlKey = `${parsed.origin}${parsed.pathname}`.toLowerCase();
+    } catch {
+      urlKey = String(statsUrl || "").trim().toLowerCase();
+    }
+  }
+
+  return {
+    idKey: storyId ? `id:${storyId.toLowerCase()}` : "",
+    urlKey: urlKey ? `url:${urlKey}` : "",
+    nameKey: `name:${normalizeComparisonStoryName(story && story.storyName ? story.storyName : "")}`
+  };
+}
+
+function buildComparisonIndex(stories) {
+  const idMap = new Map();
+  const urlMap = new Map();
+  const nameMap = new Map();
+  const identities = [];
+
+  stories.forEach((story, index) => {
+    const identity = getComparisonIdentity(story);
+    identities.push(identity);
+
+    if (identity.idKey) {
+      if (!idMap.has(identity.idKey)) {
+        idMap.set(identity.idKey, []);
+      }
+      idMap.get(identity.idKey).push(index);
+    }
+
+    if (identity.urlKey) {
+      if (!urlMap.has(identity.urlKey)) {
+        urlMap.set(identity.urlKey, []);
+      }
+      urlMap.get(identity.urlKey).push(index);
+    }
+
+    if (identity.nameKey) {
+      if (!nameMap.has(identity.nameKey)) {
+        nameMap.set(identity.nameKey, []);
+      }
+      nameMap.get(identity.nameKey).push(index);
+    }
+  });
+
+  return { idMap, urlMap, nameMap, identities };
+}
+
+function findFirstAvailableIndex(indexList, usedSet) {
+  if (!Array.isArray(indexList)) {
+    return -1;
+  }
+  for (let i = 0; i < indexList.length; i += 1) {
+    const idx = indexList[i];
+    if (!usedSet.has(idx)) {
+      return idx;
+    }
+  }
+  return -1;
+}
+
 function computeDiffRows(baseSnapshot, targetSnapshot) {
-  const baseMap = buildStoryMap(baseSnapshot);
-  const targetMap = buildStoryMap(targetSnapshot);
-  const keys = new Set([...baseMap.keys(), ...targetMap.keys()]);
+  const baseStories = Array.isArray(baseSnapshot && baseSnapshot.stories) ? baseSnapshot.stories : [];
+  const targetStories = Array.isArray(targetSnapshot && targetSnapshot.stories) ? targetSnapshot.stories : [];
+  const targetIndex = buildComparisonIndex(targetStories);
+  const usedTargetIndexes = new Set();
 
-  const diffRows = [];
-  keys.forEach((key) => {
-    const a = baseMap.get(key) || null;
-    const b = targetMap.get(key) || null;
+  const delta = (x, y) => {
+    if (x === null || x === undefined || y === null || y === undefined) {
+      return null;
+    }
+    return y - x;
+  };
 
+  const pct = (x, y) => {
+    if (x === null || x === undefined || y === null || y === undefined || x === 0) {
+      return null;
+    }
+    return ((y - x) / Math.abs(x)) * 100;
+  };
+
+  const pushDiffRow = (a, b) => {
     const storyName = (b && b.storyName) || (a && a.storyName) || "(Unknown Story)";
     const storyUrl = (b && getStatsPostUrl(b)) || (a && getStatsPostUrl(a)) || "";
     const status = !a && b ? "new" : a && !b ? "removed" : "existing";
-
-    const delta = (x, y) => {
-      if (x === null || x === undefined || y === null || y === undefined) {
-        return null;
-      }
-      return y - x;
-    };
-
-    const pct = (x, y) => {
-      if (x === null || x === undefined || y === null || y === undefined || x === 0) {
-        return null;
-      }
-      return ((y - x) / Math.abs(x)) * 100;
-    };
 
     diffRows.push({
       storyName,
@@ -1172,6 +1244,37 @@ function computeDiffRows(baseSnapshot, targetSnapshot) {
       earningsDelta: delta(a ? a.earnings : null, b ? b.earnings : null),
       earningsPct: pct(a ? a.earnings : null, b ? b.earnings : null)
     });
+  };
+
+  const diffRows = [];
+  baseStories.forEach((baseStory) => {
+    const identity = getComparisonIdentity(baseStory);
+
+    let targetIndexMatch = -1;
+    if (identity.idKey) {
+      targetIndexMatch = findFirstAvailableIndex(targetIndex.idMap.get(identity.idKey), usedTargetIndexes);
+    }
+    if (targetIndexMatch < 0 && identity.urlKey) {
+      targetIndexMatch = findFirstAvailableIndex(targetIndex.urlMap.get(identity.urlKey), usedTargetIndexes);
+    }
+    if (targetIndexMatch < 0 && identity.nameKey) {
+      targetIndexMatch = findFirstAvailableIndex(targetIndex.nameMap.get(identity.nameKey), usedTargetIndexes);
+    }
+
+    if (targetIndexMatch >= 0) {
+      usedTargetIndexes.add(targetIndexMatch);
+      pushDiffRow(baseStory, targetStories[targetIndexMatch]);
+      return;
+    }
+
+    pushDiffRow(baseStory, null);
+  });
+
+  targetStories.forEach((targetStory, index) => {
+    if (usedTargetIndexes.has(index)) {
+      return;
+    }
+    pushDiffRow(null, targetStory);
   });
 
   diffRows.sort((x, y) => {
@@ -1561,18 +1664,101 @@ function renderDiff(baseId, targetId) {
   `;
 }
 
-function renderSnapshotAudit(baseId, targetId) {
-  if (!state.auditContainerEl) {
-    return;
+function analyzeSnapshotQuality(snapshot) {
+  const stories = Array.isArray(snapshot && snapshot.stories) ? snapshot.stories : [];
+  const total = stories.length;
+  if (!total) {
+    return {
+      total,
+      missingIdentity: 0,
+      missingCoreMetrics: 0,
+      readsGreaterThanViews: 0,
+      duplicateIdentity: 0,
+      score: 0
+    };
   }
 
-  const baseSnapshot = getSnapshotById(baseId);
-  const targetSnapshot = getSnapshotById(targetId);
-  if (!baseSnapshot || !targetSnapshot) {
-    state.auditContainerEl.innerHTML = "<div class='mw-empty'>Select two snapshots to inspect raw stored values.</div>";
-    return;
-  }
+  let missingIdentity = 0;
+  let missingCoreMetrics = 0;
+  let readsGreaterThanViews = 0;
+  let duplicateIdentity = 0;
+  const seenIdentities = new Set();
 
+  stories.forEach((story) => {
+    const identity = getComparisonIdentity(story);
+    const primaryIdentity = identity.idKey || identity.urlKey || identity.nameKey;
+
+    if (!identity.idKey && !identity.urlKey) {
+      missingIdentity += 1;
+    }
+
+    if (!Number.isFinite(Number(story.views)) || !Number.isFinite(Number(story.reads)) || !Number.isFinite(Number(story.earnings))) {
+      missingCoreMetrics += 1;
+    }
+
+    const views = Number(story.views);
+    const reads = Number(story.reads);
+    if (Number.isFinite(views) && Number.isFinite(reads) && reads - views > CHANGE_EPSILON) {
+      readsGreaterThanViews += 1;
+    }
+
+    if (seenIdentities.has(primaryIdentity)) {
+      duplicateIdentity += 1;
+    } else {
+      seenIdentities.add(primaryIdentity);
+    }
+  });
+
+  const missingIdentityRate = missingIdentity / total;
+  const missingCoreRate = missingCoreMetrics / total;
+  const readsGreaterRate = readsGreaterThanViews / total;
+  const duplicateRate = duplicateIdentity / total;
+
+  const score = Math.max(
+    0,
+    Math.round(
+      100
+      - missingIdentityRate * 25
+      - missingCoreRate * 35
+      - readsGreaterRate * 20
+      - duplicateRate * 20
+    )
+  );
+
+  return {
+    total,
+    missingIdentity,
+    missingCoreMetrics,
+    readsGreaterThanViews,
+    duplicateIdentity,
+    score
+  };
+}
+
+function getQualityLabel(score) {
+  if (score >= 85) {
+    return "Excellent";
+  }
+  if (score >= 70) {
+    return "Good";
+  }
+  if (score >= 50) {
+    return "Fair";
+  }
+  return "Poor";
+}
+
+function getQualityToneClass(score) {
+  if (score >= 70) {
+    return "mw-pos";
+  }
+  if (score >= 50) {
+    return "mw-neutral";
+  }
+  return "mw-neg";
+}
+
+function buildSnapshotAuditReport(baseSnapshot, targetSnapshot) {
   const rows = computeDiffRows(baseSnapshot, targetSnapshot)
     .filter((row) => row.status === "existing")
     .sort((a, b) => a.storyName.localeCompare(b.storyName));
@@ -1586,9 +1772,70 @@ function renderSnapshotAudit(baseId, targetId) {
     return negativeReads || (readsEqualsViewsInTarget && earningsDroppedToZero);
   });
 
+  const baseQuality = analyzeSnapshotQuality(baseSnapshot);
+  const targetQuality = analyzeSnapshotQuality(targetSnapshot);
+
+  const baseTotal = Array.isArray(baseSnapshot.stories) ? baseSnapshot.stories.length : 0;
+  const targetTotal = Array.isArray(targetSnapshot.stories) ? targetSnapshot.stories.length : 0;
+  const largerSnapshotSize = Math.max(baseTotal, targetTotal, 1);
+  const overlapRate = rows.length / largerSnapshotSize;
+  const suspiciousRate = rows.length ? suspicious.length / rows.length : 1;
+
+  const pairScore = Math.max(
+    0,
+    Math.round(
+      100
+      - (1 - overlapRate) * 55
+      - suspiciousRate * 45
+    )
+  );
+
+  return {
+    rows,
+    suspicious,
+    baseQuality,
+    targetQuality,
+    baseTotal,
+    targetTotal,
+    overlapRate,
+    suspiciousRate,
+    overlapPercent: Math.round(overlapRate * 100),
+    suspiciousPercent: rows.length ? Math.round(suspiciousRate * 100) : 100,
+    pairScore,
+    pairLabel: getQualityLabel(pairScore),
+    pairTone: getQualityToneClass(pairScore)
+  };
+}
+
+function renderSnapshotAudit(baseId, targetId) {
+  if (!state.auditContainerEl) {
+    return;
+  }
+
+  const baseSnapshot = getSnapshotById(baseId);
+  const targetSnapshot = getSnapshotById(targetId);
+  if (!baseSnapshot || !targetSnapshot) {
+    state.auditContainerEl.innerHTML = "<div class='mw-empty'>Select two snapshots to inspect raw stored values.</div>";
+    return;
+  }
+
+  const audit = buildSnapshotAuditReport(baseSnapshot, targetSnapshot);
+  const { rows, suspicious, baseQuality, targetQuality } = audit;
+
   const header = `
     <div class="mw-summary-head">Snapshot Audit: ${formatTimestamp(baseSnapshot.capturedAt)} to ${formatTimestamp(targetSnapshot.capturedAt)}</div>
     <div class="mw-summary-count">Existing stories: ${rows.length}. Suspicious rows: ${suspicious.length}.</div>
+    <div class="mw-summary-count ${audit.pairTone}">Pair Quality: ${audit.pairScore}/100 (${audit.pairLabel}) • Overlap ${audit.overlapPercent}% • Suspicious ${audit.suspiciousPercent}%</div>
+    <div class="mw-summary-count">
+      Base Quality: <span class="${getQualityToneClass(baseQuality.score)}">${baseQuality.score}/100 (${getQualityLabel(baseQuality.score)})</span>
+      • Target Quality: <span class="${getQualityToneClass(targetQuality.score)}">${targetQuality.score}/100 (${getQualityLabel(targetQuality.score)})</span>
+    </div>
+    <div class="mw-summary-count">
+      Base checks: missing identity ${baseQuality.missingIdentity}, missing core metrics ${baseQuality.missingCoreMetrics}, reads>views ${baseQuality.readsGreaterThanViews}, duplicate identity ${baseQuality.duplicateIdentity}.
+    </div>
+    <div class="mw-summary-count">
+      Target checks: missing identity ${targetQuality.missingIdentity}, missing core metrics ${targetQuality.missingCoreMetrics}, reads>views ${targetQuality.readsGreaterThanViews}, duplicate identity ${targetQuality.duplicateIdentity}.
+    </div>
   `;
 
   if (!rows.length) {
@@ -1640,6 +1887,76 @@ function renderSnapshotAudit(baseId, targetId) {
         : ""
     }
   `;
+}
+
+async function exportSnapshotAuditJson(baseId, targetId) {
+  const baseSnapshot = getSnapshotById(baseId);
+  const targetSnapshot = getSnapshotById(targetId);
+  if (!baseSnapshot || !targetSnapshot) {
+    throw new Error("Select valid A/B snapshots before exporting audit JSON.");
+  }
+
+  const audit = buildSnapshotAuditReport(baseSnapshot, targetSnapshot);
+  const payload = {
+    exportedAt: nowIso(),
+    type: "snapshot-audit-report",
+    baseSnapshotId: baseId,
+    targetSnapshotId: targetId,
+    baseCapturedAt: baseSnapshot.capturedAt,
+    targetCapturedAt: targetSnapshot.capturedAt,
+    pairQuality: {
+      score: audit.pairScore,
+      label: audit.pairLabel,
+      overlapPercent: audit.overlapPercent,
+      suspiciousPercent: audit.suspiciousPercent,
+      existingStories: audit.rows.length,
+      suspiciousStories: audit.suspicious.length
+    },
+    snapshotQuality: {
+      base: audit.baseQuality,
+      target: audit.targetQuality
+    },
+    suspiciousRows: audit.suspicious.map((row) => ({
+      storyName: row.storyName,
+      storyUrl: row.storyUrl,
+      viewsA: row.viewsA,
+      viewsB: row.viewsB,
+      readsA: row.readsA,
+      readsB: row.readsB,
+      readsDelta: row.readsDelta,
+      earningsA: row.earningsA,
+      earningsB: row.earningsB,
+      earningsDelta: row.earningsDelta
+    }))
+  };
+
+  const json = JSON.stringify(payload, null, 2);
+  const outputEl = document.getElementById("mw-export-json-output");
+  if (outputEl) {
+    outputEl.value = json;
+  }
+
+  let copied = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(json);
+      copied = true;
+    } catch {
+      copied = false;
+    }
+  }
+
+  if (!copied && outputEl) {
+    outputEl.focus();
+    outputEl.select();
+  }
+
+  setStatus(
+    copied
+      ? "Audit report JSON exported and copied to clipboard."
+      : "Audit report JSON exported. Clipboard unavailable; copy from the text box.",
+    false
+  );
 }
 
 function buildSnapshotExportPayload(baseId, targetId) {
@@ -3041,6 +3358,7 @@ function createPanelMarkup() {
             <select id="mw-compare-b"></select>
           <button id="mw-run-default-compare" type="button">Run Default Comparison</button>
           <button id="mw-audit-compare" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Audit Snapshot Pair</button>
+          <button id="mw-export-audit-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Export Audit JSON</button>
           <button id="mw-export-compare-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Export A/B JSON</button>
         </div>
         <div id="mw-diff"></div>
@@ -3223,9 +3541,13 @@ function wirePanelEvents() {
     }
 
     const auditButton = document.getElementById("mw-audit-compare");
+    const exportAuditButton = document.getElementById("mw-export-audit-json");
     const exportButton = document.getElementById("mw-export-compare-json");
     if (auditButton) {
       auditButton.style.display = event.shiftKey ? "" : "none";
+    }
+    if (exportAuditButton) {
+      exportAuditButton.style.display = event.shiftKey ? "" : "none";
     }
     if (exportButton) {
       exportButton.style.display = event.shiftKey ? "" : "none";
@@ -3311,6 +3633,18 @@ function wirePanelEvents() {
       await exportSelectedSnapshotsJson(a, b);
     } catch (err) {
       setStatus(err.message || "Export failed.", true);
+    }
+  });
+
+  document.getElementById("mw-export-audit-json").addEventListener("click", async () => {
+    try {
+      const a = state.selectCompareA.value;
+      const b = state.selectCompareB.value;
+      setAuditSectionVisible(true);
+      renderSnapshotAudit(a, b);
+      await exportSnapshotAuditJson(a, b);
+    } catch (err) {
+      setStatus(err.message || "Audit export failed.", true);
     }
   });
 

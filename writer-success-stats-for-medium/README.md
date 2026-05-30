@@ -78,7 +78,7 @@ The **Compare Any Two** area supports manual picker-based comparisons and a defa
 	- Target snapshot (B): **latest available snapshot from the latest date**.
 
 - Hidden advanced controls:
-	- Hold `Shift` while clicking `Run Default Comparison` to reveal `Audit Snapshot Pair`, `Export A/B JSON`, and the `Delete Data` section.
+	- Hold `Shift` while clicking `Run Default Comparison` to reveal `Audit Snapshot Pair`, `Export Audit JSON`, `Export A/B JSON`, and the `Delete Data` section.
 	- Click `Run Default Comparison` without `Shift` to hide those advanced controls again.
 
 This gives a full-range comparison across all available saved history.
