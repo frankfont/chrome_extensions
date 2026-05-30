@@ -3065,14 +3065,18 @@ function createPanelMarkup() {
         bottom: 16px;
         width: 44px;
         height: 44px;
-        border-radius: 22px;
-        border: 1px solid #111;
-        background: #fff;
+        border-radius: 0;
+        border: 0;
+        background: transparent;
         color: #111;
+        padding: 0;
         z-index: 2147483646;
-        font-size: 14px;
-        font-weight: 700;
         cursor: pointer;
+      }
+      #${PANEL_IDS.launcher} img {
+        width: 100%;
+        height: 100%;
+        display: block;
       }
       #${PANEL_IDS.panel} {
         position: fixed;
@@ -3426,7 +3430,9 @@ function createPanelMarkup() {
       }
     </style>
 
-    <button id="${PANEL_IDS.launcher}" title="Open Writer Success Stats for Medium">WSM</button>
+    <button id="${PANEL_IDS.launcher}" title="Open Writer Success Stats for Medium" aria-label="Open Writer Success Stats for Medium">
+      <img src="${chrome.runtime.getURL("icon.svg")}" alt="Writer Success Stats for Medium" />
+    </button>
 
     <aside id="${PANEL_IDS.panel}" aria-live="polite">
       <div class="mw-row mw-panel-header" style="justify-content: space-between; align-items: center;">

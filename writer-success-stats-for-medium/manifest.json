@@ -27,7 +27,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["author.png"],
+      "resources": ["author.png", "icon.svg"],
       "matches": ["https://medium.com/*"]
     }
   ]
