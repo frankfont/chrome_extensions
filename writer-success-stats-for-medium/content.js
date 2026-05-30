@@ -28,7 +28,7 @@ const AUTO_SCROLL_WAIT_INTERVAL_MS = 75;
 const AUTO_SCROLL_WAIT_TIMEOUT_MS = 1800;
 const COMPARE_AUTO_RENDER_DEBOUNCE_MS = 150;
 const ROUTE_CHECK_INTERVAL_MS = 500;
-const DEFAULT_TREND_GROUP_MAX_SIZE = 100;
+const DEFAULT_TREND_GROUP_MAX_SIZE = 50;
 const MIN_TREND_GROUP_MAX_SIZE = 2;
 const MAX_TREND_GROUP_MAX_SIZE = 1000;
 const TREND_COLOR_VIEWS = "#d97706";
@@ -38,7 +38,8 @@ const TREND_COLOR_EARNINGS = "#16a34a";
 const STORAGE_KEYS = {
   snapshots: "mwSnapshots",
   lastAutoSnapshotDate: "mwLastAutoSnapshotDate",
-  trendGroupMaxSize: "mwTrendGroupMaxSize"
+  trendGroupMaxSize: "mwTrendGroupMaxSize",
+  trendGroupMaxCustomized: "mwTrendGroupMaxCustomized"
 };
 
 const PANEL_IDS = {
@@ -120,6 +121,29 @@ function setDeleteSectionVisible(visible) {
     return;
   }
   state.deleteSectionEl.style.display = visible ? "block" : "none";
+}
+
+function setAdvancedFeaturesVisible(visible) {
+  const auditButton = document.getElementById("mw-audit-compare");
+  const exportAuditButton = document.getElementById("mw-export-audit-json");
+  const exportCompareButton = document.getElementById("mw-export-compare-json");
+  const hideAdvancedButton = document.getElementById("mw-hide-advanced-features");
+
+  if (auditButton) {
+    auditButton.style.display = visible ? "" : "none";
+  }
+  if (exportAuditButton) {
+    exportAuditButton.style.display = visible ? "" : "none";
+  }
+  if (exportCompareButton) {
+    exportCompareButton.style.display = visible ? "" : "none";
+  }
+  if (hideAdvancedButton) {
+    hideAdvancedButton.style.display = visible ? "" : "none";
+  }
+
+  setTransferSectionVisible(visible);
+  setDeleteSectionVisible(visible);
 }
 
 function setTrendGroupSettingsVisible(visible) {
@@ -2230,13 +2254,26 @@ function getTrendGroupMaxSize() {
 }
 
 async function loadTrendGroupMaxSetting() {
-  const result = await getStorage([STORAGE_KEYS.trendGroupMaxSize]);
-  state.trendGroupMaxSize = sanitizeTrendGroupMaxSize(result[STORAGE_KEYS.trendGroupMaxSize]);
+  const result = await getStorage([STORAGE_KEYS.trendGroupMaxSize, STORAGE_KEYS.trendGroupMaxCustomized]);
+  const rawValue = result[STORAGE_KEYS.trendGroupMaxSize];
+  const customized = !!result[STORAGE_KEYS.trendGroupMaxCustomized];
+
+  if (!customized && Number(rawValue) === 100) {
+    state.trendGroupMaxSize = DEFAULT_TREND_GROUP_MAX_SIZE;
+    await setStorage({
+      [STORAGE_KEYS.trendGroupMaxSize]: state.trendGroupMaxSize,
+      [STORAGE_KEYS.trendGroupMaxCustomized]: false
+    });
+    return;
+  }
+
+  state.trendGroupMaxSize = sanitizeTrendGroupMaxSize(rawValue);
 }
 
 async function persistTrendGroupMaxSetting() {
   await setStorage({
-    [STORAGE_KEYS.trendGroupMaxSize]: getTrendGroupMaxSize()
+    [STORAGE_KEYS.trendGroupMaxSize]: getTrendGroupMaxSize(),
+    [STORAGE_KEYS.trendGroupMaxCustomized]: true
   });
 }
 
@@ -2392,6 +2429,12 @@ function getTrendRows(storyName) {
 }
 
 function formatTrendDateLabel(iso) {
+  const raw = String(iso || "").trim();
+  const dayKeyMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dayKeyMatch) {
+    return `${dayKeyMatch[2]}/${dayKeyMatch[3]}`;
+  }
+
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) {
     return String(iso || "");
@@ -2402,9 +2445,74 @@ function formatTrendDateLabel(iso) {
   return `${month}/${day}`;
 }
 
-function buildTrendSeriesGeometry(rowsAsc, key, left, top, width, height, minValue, maxValue) {
+function buildTrendXPositionsByDay(rowsAsc, left, width) {
+  if (!Array.isArray(rowsAsc) || !rowsAsc.length) {
+    return {
+      xPositions: [],
+      dayKeys: [],
+      dayAnchors: []
+    };
+  }
+
+  const dayKeys = Array.from(new Set(rowsAsc.map((row) => toDateKey(row.capturedAt))));
+  const dayCount = dayKeys.length;
+  const dayStep = dayCount <= 1 ? width : width / (dayCount - 1);
+  const dayIndexByKey = new Map(dayKeys.map((dayKey, index) => [dayKey, index]));
+  const dayAnchors = dayKeys.map((_, index) => (dayCount <= 1 ? left + width / 2 : left + index * dayStep));
+
+  const indexesByDay = new Map();
+  rowsAsc.forEach((row, rowIndex) => {
+    const dayKey = toDateKey(row.capturedAt);
+    if (!indexesByDay.has(dayKey)) {
+      indexesByDay.set(dayKey, []);
+    }
+    indexesByDay.get(dayKey).push(rowIndex);
+  });
+
+  const xPositions = new Array(rowsAsc.length).fill(left + width / 2);
+  dayKeys.forEach((dayKey) => {
+    const rowIndexes = indexesByDay.get(dayKey) || [];
+    if (!rowIndexes.length) {
+      return;
+    }
+
+    const dayIndex = dayIndexByKey.get(dayKey);
+    const anchor = dayAnchors[dayIndex];
+
+    if (rowIndexes.length === 1) {
+      xPositions[rowIndexes[0]] = anchor;
+      return;
+    }
+
+    let minX;
+    let maxX;
+    if (dayCount <= 1) {
+      minX = left;
+      maxX = left + width;
+    } else if (dayIndex === 0) {
+      minX = anchor;
+      maxX = anchor + dayStep;
+    } else if (dayIndex === dayCount - 1) {
+      minX = anchor - dayStep;
+      maxX = anchor;
+    } else {
+      minX = anchor - dayStep / 2;
+      maxX = anchor + dayStep / 2;
+    }
+
+    const span = Math.max(0, maxX - minX);
+    rowIndexes.forEach((rowIndex, positionIndex) => {
+      const t = rowIndexes.length <= 1 ? 0.5 : positionIndex / (rowIndexes.length - 1);
+      xPositions[rowIndex] = minX + span * t;
+    });
+  });
+
+  return { xPositions, dayKeys, dayAnchors };
+}
+
+function buildTrendSeriesGeometry(rowsAsc, key, xPositions, top, height, minValue, maxValue) {
   const seriesRows = rowsAsc
-    .map((row, index) => ({ index, value: Number(row[key]), capturedAt: row.capturedAt }))
+    .map((row, index) => ({ index, x: xPositions[index], value: Number(row[key]), capturedAt: row.capturedAt }))
     .filter((item) => Number.isFinite(item.value));
 
   if (!seriesRows.length) {
@@ -2415,16 +2523,13 @@ function buildTrendSeriesGeometry(rowsAsc, key, left, top, width, height, minVal
   const max = Number.isFinite(maxValue) ? maxValue : min + 1;
   const span = Math.max(0.000001, max - min);
 
-  const toX = (index) => (rowsAsc.length <= 1
-    ? left + width / 2
-    : left + (index / (rowsAsc.length - 1)) * width);
   const toY = (value) => {
     return top + height - ((value - min) / span) * height;
   };
 
-  const points = seriesRows.map((item) => `${toX(item.index)},${toY(item.value)}`);
+  const points = seriesRows.map((item) => `${item.x},${toY(item.value)}`);
   const circles = seriesRows.map((item) => {
-    const x = toX(item.index);
+    const x = item.x;
     const y = toY(item.value);
     return `<circle cx="${x}" cy="${y}" r="2.5" />`;
   }).join("");
@@ -2481,6 +2586,13 @@ function renderTrendChart(storyName) {
   }
 
   const rowsAsc = [...trendRows].sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+  let rowsForChart = rowsAsc;
+  if (rowsAsc.length > 1000) {
+    rowsForChart = rowsAsc.filter((_, index) => index % 10 === 0);
+    if (rowsForChart[rowsForChart.length - 1] !== rowsAsc[rowsAsc.length - 1]) {
+      rowsForChart.push(rowsAsc[rowsAsc.length - 1]);
+    }
+  }
 
   const svgWidth = 1000;
   const svgHeight = 420;
@@ -2498,33 +2610,32 @@ function renderTrendChart(storyName) {
   const leftAxisTop = Math.max(10, Math.floor(Math.max(latestViews, latestReads) / 10) * 10 + 10);
   const rightAxisTop = Math.max(1, Math.floor(latestEarnings) + 1);
 
-  const views = buildTrendSeriesGeometry(rowsAsc, "views", margin.left, margin.top, plotWidth, plotHeight, 0, leftAxisTop);
-  const reads = buildTrendSeriesGeometry(rowsAsc, "reads", margin.left, margin.top, plotWidth, plotHeight, 0, leftAxisTop);
-  const earnings = buildTrendSeriesGeometry(rowsAsc, "earnings", margin.left, margin.top, plotWidth, plotHeight, 0, rightAxisTop);
+  const xGeometry = buildTrendXPositionsByDay(rowsForChart, margin.left, plotWidth);
+  const { xPositions, dayKeys: chartDayKeys, dayAnchors } = xGeometry;
 
-  const latestReadPointX = rowsAsc.length <= 1
-    ? margin.left + plotWidth / 2
-    : margin.left + plotWidth;
+  const views = buildTrendSeriesGeometry(rowsForChart, "views", xPositions, margin.top, plotHeight, 0, leftAxisTop);
+  const reads = buildTrendSeriesGeometry(rowsForChart, "reads", xPositions, margin.top, plotHeight, 0, leftAxisTop);
+  const earnings = buildTrendSeriesGeometry(rowsForChart, "earnings", xPositions, margin.top, plotHeight, 0, rightAxisTop);
+
+  const latestReadPointX = xPositions.length ? xPositions[xPositions.length - 1] : (margin.left + plotWidth / 2);
   const latestReadPointY = margin.top + plotHeight - ((latestReads - 0) / Math.max(0.000001, leftAxisTop)) * plotHeight;
   const latestReadLabelX = latestReadPointX - 6;
   const latestReadLabelY = Math.max(margin.top + 10, latestReadPointY - 6);
 
-  const tickCount = Math.min(6, rowsAsc.length);
+  const tickCount = Math.min(6, chartDayKeys.length);
   const ticks = [];
   for (let i = 0; i < tickCount; i += 1) {
     const idx = tickCount === 1
       ? 0
-      : Math.round((i / (tickCount - 1)) * (rowsAsc.length - 1));
+      : Math.round((i / (tickCount - 1)) * (chartDayKeys.length - 1));
     ticks.push(idx);
   }
   const uniqueTicks = Array.from(new Set(ticks));
   const tickLabels = uniqueTicks.map((idx) => {
-    const x = rowsAsc.length <= 1
-      ? margin.left + plotWidth / 2
-      : margin.left + (idx / (rowsAsc.length - 1)) * plotWidth;
+    const x = dayAnchors[idx] || (margin.left + plotWidth / 2);
     return `
       <line x1="${x}" y1="${xAxisY}" x2="${x}" y2="${xAxisY + 6}" stroke="#666" stroke-width="1" />
-      <text x="${x}" y="${xAxisY + 20}" text-anchor="middle" font-size="11" fill="#444">${formatTrendDateLabel(rowsAsc[idx].capturedAt)}</text>
+      <text x="${x}" y="${xAxisY + 20}" text-anchor="middle" font-size="11" fill="#444">${formatTrendDateLabel(chartDayKeys[idx])}</text>
     `;
   }).join("");
 
@@ -2600,14 +2711,28 @@ function renderTrend(storyName) {
     return;
   }
 
-  const tableRows = filteredRows.map((row) => `
+  let rowsForTable = filteredRows;
+  let hasEllipsisGap = false;
+  if (filteredRows.length > 10) {
+    const rowsAsc = [...filteredRows].reverse();
+    const oldestFive = rowsAsc.slice(0, 5);
+    const newestFive = rowsAsc.slice(-5);
+    rowsForTable = [...oldestFive, ...newestFive];
+    hasEllipsisGap = true;
+  }
+
+  const tableRows = rowsForTable.map((row, index) => {
+    const ellipsisRow = hasEllipsisGap && index === 5
+      ? "<tr><td colspan='4' style='text-align: center;'>...</td></tr>"
+      : "";
+    return `${ellipsisRow}
     <tr>
       <td>${formatTimestamp(row.capturedAt)}</td>
       <td>${formatNumber(row.views)}</td>
       <td>${formatNumber(row.reads)}</td>
       <td>${formatCurrency(row.earnings)}</td>
-    </tr>
-  `).join("");
+    </tr>`;
+  }).join("");
 
   state.trendContainerEl.innerHTML = `
     <div class="mw-table-wrap">
@@ -3326,7 +3451,6 @@ function createPanelMarkup() {
         <div class="mw-row mw-snapshot-controls">
           <div class="mw-row mw-snapshot-actions">
             <button id="mw-manual-snapshot-smart" type="button">Capture Snapshot</button>
-            <button id="mw-open-transfer-data" type="button">Transfer Data</button>
             <button id="mw-prune-snapshots" type="button">Prune Snapshots</button>
           </div>
           <div id="mw-summary" class="mw-snapshot-inline-summary"></div>
@@ -3335,7 +3459,7 @@ function createPanelMarkup() {
       </div>
 
       <div class="mw-section" id="mw-transfer-section" style="display: none;">
-        <div class="mw-section-title">Transfer Data</div>
+        <div class="mw-section-title">Advanced Features: Transfer Data</div>
         <div class="mw-row">
           <button id="mw-export-all" type="button">Export All</button>
           <button id="mw-import-all" type="button">Import All</button>
@@ -3357,9 +3481,10 @@ function createPanelMarkup() {
             <select id="mw-compare-b-day"></select>
             <select id="mw-compare-b"></select>
           <button id="mw-run-default-compare" type="button">Run Default Comparison</button>
-          <button id="mw-audit-compare" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Audit Snapshot Pair</button>
-          <button id="mw-export-audit-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Export Audit JSON</button>
-          <button id="mw-export-compare-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Export A/B JSON</button>
+          <button id="mw-audit-compare" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Advanced Features: Audit Snapshot Pair</button>
+          <button id="mw-export-audit-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Advanced Features: Export Audit JSON</button>
+          <button id="mw-export-compare-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Advanced Features: Export A/B JSON</button>
+          <button id="mw-hide-advanced-features" type="button" style="display: none;">Hide Advanced Features</button>
         </div>
         <div id="mw-diff"></div>
         <div id="mw-audit-export-section" style="display: none; margin-top: 8px;">
@@ -3373,7 +3498,7 @@ function createPanelMarkup() {
         <div id="mw-trend-filters" class="mw-trend-filter-row" aria-label="Trend story starting-letter filters"></div>
         <div id="mw-trend-group-settings" class="mw-trend-group-settings" aria-label="Trend list size settings">
           <label for="mw-trend-group-max">Max stories per filter</label>
-          <input id="mw-trend-group-max" type="number" min="2" max="1000" step="1" value="100" />
+          <input id="mw-trend-group-max" type="number" min="2" max="1000" step="1" value="50" />
           <button id="mw-trend-group-apply" type="button">Set Max</button>
         </div>
         <div class="mw-row">
@@ -3384,7 +3509,7 @@ function createPanelMarkup() {
       </div>
 
       <div class="mw-section" id="mw-delete-section" style="display: none;">
-        <div class="mw-section-title mw-danger-title">Delete Data</div>
+        <div class="mw-section-title mw-danger-title">Advanced Features: Delete Data</div>
         <div class="mw-danger-warning">Warning: deleted snapshots and deleted story data cannot be recovered.</div>
         <!-- Delete Story controls are intentionally hidden for now; keep markup for future restore. -->
         <div class="mw-row" style="display: none;" aria-hidden="true">
@@ -3447,6 +3572,7 @@ function wirePanelEvents() {
   setAuditSectionVisible(false);
   setTransferSectionVisible(false);
   setDeleteSectionVisible(false);
+  setAdvancedFeaturesVisible(false);
   setTrendGroupSettingsVisible(false);
 
   if (state.trendGroupMaxInputEl) {
@@ -3540,23 +3666,16 @@ function wirePanelEvents() {
       return;
     }
 
-    const auditButton = document.getElementById("mw-audit-compare");
-    const exportAuditButton = document.getElementById("mw-export-audit-json");
-    const exportButton = document.getElementById("mw-export-compare-json");
-    if (auditButton) {
-      auditButton.style.display = event.shiftKey ? "" : "none";
-    }
-    if (exportAuditButton) {
-      exportAuditButton.style.display = event.shiftKey ? "" : "none";
-    }
-    if (exportButton) {
-      exportButton.style.display = event.shiftKey ? "" : "none";
-    }
-    setDeleteSectionVisible(!!event.shiftKey);
+    setAdvancedFeaturesVisible(!!event.shiftKey);
 
     refreshSegmentedCompareSelectors(a, b);
     renderDiff(a, b);
     setStatus("Default comparison rendered.");
+  });
+
+  document.getElementById("mw-hide-advanced-features").addEventListener("click", () => {
+    setAdvancedFeaturesVisible(false);
+    setStatus("Advanced Features hidden.");
   });
 
   if (state.selectCompareDateA) {
@@ -3584,11 +3703,6 @@ function wirePanelEvents() {
       scheduleCompareRender();
     });
   }
-
-  document.getElementById("mw-open-transfer-data").addEventListener("click", () => {
-    setTransferSectionVisible(true);
-    setStatus("Transfer Data section opened.");
-  });
 
   document.getElementById("mw-prune-snapshots").addEventListener("click", async () => {
     try {

@@ -77,9 +77,10 @@ The **Compare Any Two** area supports manual picker-based comparisons and a defa
 	- Base snapshot (A): **earliest available snapshot from the earliest date**.
 	- Target snapshot (B): **latest available snapshot from the latest date**.
 
-- Hidden advanced controls:
-	- Hold `Shift` while clicking `Run Default Comparison` to reveal `Audit Snapshot Pair`, `Export Audit JSON`, `Export A/B JSON`, and the `Delete Data` section.
-	- Click `Run Default Comparison` without `Shift` to hide those advanced controls again.
+- Advanced Features controls:
+	- Hold `Shift` while clicking `Run Default Comparison` to reveal `Advanced Features: Audit Snapshot Pair`, `Advanced Features: Export Audit JSON`, `Advanced Features: Export A/B JSON`, the `Advanced Features: Transfer Data` section, and the `Advanced Features: Delete Data` section.
+	- Click `Hide Advanced Features` to collapse all revealed Advanced Features controls and sections.
+	- Click `Run Default Comparison` without `Shift` also hides those Advanced Features controls again.
 
 This gives a full-range comparison across all available saved history.
 
@@ -129,16 +130,21 @@ Story presence rules:
 - Rows are sorted most recent first.
 - For **today**, multiple snapshots may appear.
 - For any **earlier day**, only that day's most recent snapshot is shown.
+- Trend table output is capped to 10 displayed rows when more are available:
+	- oldest 5 rows,
+	- then `...`,
+	- then newest 5 rows.
 - `Show Trend` also opens an SVG line chart overlay for the selected story:
 	- Views line: orange
 	- Reads line: blue
 	- Earnings line: green
 	- X-axis is days and lines connect point-to-point directly (snapshot gaps are not expanded with empty points).
+	- If there are more than 1000 trend points, chart plotting is downsampled to every 10th point, including oldest and newest.
 - The chart overlay spans the panel area between the panel header and the Trend section.
 - Close behavior:
 	- Click the chart `Close` button, or
 	- Click anywhere outside the chart overlay.
-- If total stories exceed the trend picker max group size (default `100`), story selection is split into A-Z filter groups.
+- If total stories exceed the trend picker max group size (default `50`), story selection is split into A-Z filter groups.
 	- Each letter is shown.
 	- Empty letters are disabled.
 	- If a letter exceeds the max size, that letter is split into numbered groups (example: `D1`, `D2`, `D3`).
@@ -161,8 +167,8 @@ Story presence rules:
 	- `Export All` writes all snapshots to JSON and copies to clipboard when available.
 	- `Import All` restores snapshots from pasted exported JSON.
 - Advanced comparison export:
-	- `Export A/B JSON` is available via hidden advanced controls (Shift + `Run Default Comparison`).
-- `Delete Data` section is hidden by default and is revealed from hidden advanced controls.
+	- `Advanced Features: Export A/B JSON` is available via Advanced Features controls (Shift + `Run Default Comparison`).
+- `Advanced Features: Delete Data` is hidden by default and is revealed from Advanced Features controls.
 - `Delete Data` currently supports deleting by specific timestamp in the visible UI.
 
 ## Scope and Constraints
