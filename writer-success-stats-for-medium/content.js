@@ -2694,6 +2694,28 @@ function showTrendChartOverlay(storyName) {
   }
 }
 
+function resolveSelectedTrendStory() {
+  if (!state.selectTrendStory) {
+    return "";
+  }
+
+  const selected = String(state.selectTrendStory.value || "").trim();
+  if (selected) {
+    return selected;
+  }
+
+  const fallback = Array.from(state.selectTrendStory.options || [])
+    .map((option) => String(option.value || "").trim())
+    .find((value) => value);
+
+  if (fallback) {
+    state.selectTrendStory.value = fallback;
+    return fallback;
+  }
+
+  return "";
+}
+
 function renderTrend(storyName) {
   if (!state.trendContainerEl) {
     return;
@@ -3770,7 +3792,7 @@ function wirePanelEvents() {
       }
       setStatus("Trend group size settings revealed.");
     }
-    const selectedStory = state.selectTrendStory ? state.selectTrendStory.value : "";
+    const selectedStory = resolveSelectedTrendStory();
     renderTrend(selectedStory);
     showTrendChartOverlay(selectedStory);
   });
