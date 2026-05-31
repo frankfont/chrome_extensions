@@ -200,3 +200,7 @@ The extension should show clear user-facing errors for cases such as:
 5. Visit `https://medium.com/me/stats` while logged into Medium.
 6. Open the extension panel from the toolbar icon or keyboard shortcut to create manual snapshots and run comparisons.
 7. Use `Run Default Comparison` for full-range compare or Daily Changes Summary for day-level change detection.
+
+## Example Panel
+
+![Screenshot](example1.png)
