@@ -3082,7 +3082,7 @@ function createPanelMarkup() {
         position: fixed;
         right: 16px;
         top: 16px;
-        width: 420px;
+        width: min(96vw, 470px);
         max-height: calc(100vh - 32px);
         overflow: auto;
         background: #fff;
@@ -3247,20 +3247,43 @@ function createPanelMarkup() {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        width: 26px;
+        gap: 6px;
+        padding: 0 10px 0 6px;
         height: 26px;
-        border-radius: 50%;
-        border: 1px solid #2d6a4f;
-        color: #2d6a4f;
-        background: #f3faf6;
-        font-size: 14px;
+        border-radius: 999px;
+        border: 1px solid #3179b8;
+        color: #0f4672;
+        background: linear-gradient(180deg, #f4fbff 0%, #deeffb 100%);
+        box-shadow: 0 1px 0 rgba(15, 70, 114, 0.12), 0 2px 6px rgba(15, 70, 114, 0.14);
+        font-size: 12px;
         font-weight: 700;
         text-decoration: none;
         line-height: 1;
+        letter-spacing: 0.02em;
+      }
+      #${PANEL_IDS.panel} .mw-info-link-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        border: 1px solid #0f4672;
+        background: #ffffff;
+        font-size: 11px;
+        font-weight: 800;
+      }
+      #${PANEL_IDS.panel} .mw-info-link-label {
+        font-size: 11px;
       }
       #${PANEL_IDS.panel} .mw-info-link:hover {
-        background: #dff3e4;
-        color: #1b4332;
+        background: linear-gradient(180deg, #eaf7ff 0%, #cfe6f9 100%);
+        color: #0b3c63;
+        box-shadow: 0 1px 0 rgba(15, 70, 114, 0.14), 0 3px 8px rgba(15, 70, 114, 0.22);
+      }
+      #${PANEL_IDS.panel} .mw-info-link:focus-visible {
+        outline: 2px solid #1f6aa5;
+        outline-offset: 2px;
       }
       #${PANEL_IDS.panel} .mw-table-wrap {
         overflow: auto;
@@ -3463,7 +3486,10 @@ function createPanelMarkup() {
       <div class="mw-row mw-panel-header" style="justify-content: space-between; align-items: center;">
         <div id="mw-panel-title" class="mw-title">Writer Success Stats for Medium</div>
         <div class="mw-row" style="margin-bottom: 0;">
-          <a class="mw-info-link" href="https://medium.com/@frankfont123/tracking-story-success-bc1e75cf2f8e" target="_blank" rel="noopener noreferrer" title="Information about this extension" aria-label="Open extension information">i</a>
+          <a class="mw-info-link" href="https://medium.com/@frankfont123/tracking-story-success-bc1e75cf2f8e" target="_blank" rel="noopener noreferrer" title="Helpful info and usage guide" aria-label="Open helpful information and usage guide">
+            <span class="mw-info-link-icon" aria-hidden="true">i</span>
+            <span class="mw-info-link-label">Info</span>
+          </a>
           <a class="mw-profile-link mw-profile-link-hidden" href="https://medium.com/@frankfont123" target="_blank" rel="noopener noreferrer" title="Open @frankfont123 on Medium">
             <img src="${chrome.runtime.getURL("author.png")}" alt="Frank Font profile" />
           </a>
