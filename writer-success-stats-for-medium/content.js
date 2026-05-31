@@ -3327,6 +3327,24 @@ function createPanelMarkup() {
         outline: 2px solid #1f6aa5;
         outline-offset: 2px;
       }
+      #${PANEL_IDS.panel} .mw-trend-run-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      #${PANEL_IDS.panel} .mw-trend-run-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 14px;
+        color: currentColor;
+      }
+      #${PANEL_IDS.panel} .mw-trend-run-icon svg {
+        width: 14px;
+        height: 14px;
+        display: block;
+      }
       #${PANEL_IDS.panel} .mw-table-wrap {
         overflow: auto;
         max-height: 200px;
@@ -3625,7 +3643,19 @@ function createPanelMarkup() {
         </div>
         <div class="mw-row">
           <select id="mw-trend-story"></select>
-          <button id="mw-trend-run" type="button">Show Trend</button>
+          <button id="mw-trend-run" class="mw-trend-run-btn" type="button">
+            <span class="mw-trend-run-icon" aria-hidden="true">
+              <svg viewBox="0 0 16 16" focusable="false" aria-hidden="true">
+                <path d="M2 12.5h12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />
+                <path d="M3 11.5L6.2 8.2L8.7 9.7L12.6 4.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                <circle cx="3" cy="11.5" r="0.9" fill="currentColor" />
+                <circle cx="6.2" cy="8.2" r="0.9" fill="currentColor" />
+                <circle cx="8.7" cy="9.7" r="0.9" fill="currentColor" />
+                <circle cx="12.6" cy="4.4" r="0.9" fill="currentColor" />
+              </svg>
+            </span>
+            <span>Show Trend</span>
+          </button>
         </div>
         <div id="mw-trend"></div>
       </div>
