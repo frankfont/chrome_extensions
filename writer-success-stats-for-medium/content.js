@@ -3243,6 +3243,25 @@ function createPanelMarkup() {
         object-fit: cover;
         display: block;
       }
+      #${PANEL_IDS.panel} .mw-info-link {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        border: 1px solid #2d6a4f;
+        color: #2d6a4f;
+        background: #f3faf6;
+        font-size: 14px;
+        font-weight: 700;
+        text-decoration: none;
+        line-height: 1;
+      }
+      #${PANEL_IDS.panel} .mw-info-link:hover {
+        background: #dff3e4;
+        color: #1b4332;
+      }
       #${PANEL_IDS.panel} .mw-table-wrap {
         overflow: auto;
         max-height: 200px;
@@ -3340,6 +3359,12 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} .mw-story-link:hover {
         color: #08482a;
       }
+      #${PANEL_IDS.panel} .mw-title {
+        cursor: default;
+      }
+      #${PANEL_IDS.panel} .mw-profile-link-hidden {
+        display: none;
+      }
       #${PANEL_IDS.panel} .mw-change-meta {
         color: #555;
         margin: 2px 0 4px;
@@ -3436,9 +3461,10 @@ function createPanelMarkup() {
 
     <aside id="${PANEL_IDS.panel}" aria-live="polite">
       <div class="mw-row mw-panel-header" style="justify-content: space-between; align-items: center;">
-        <div class="mw-title">Writer Success Stats for Medium</div>
+        <div id="mw-panel-title" class="mw-title">Writer Success Stats for Medium</div>
         <div class="mw-row" style="margin-bottom: 0;">
-          <a class="mw-profile-link" href="https://medium.com/@frankfont123" target="_blank" rel="noopener noreferrer" title="Open @frankfont123 on Medium">
+          <a class="mw-info-link" href="https://medium.com/@frankfont123/tracking-story-success-bc1e75cf2f8e" target="_blank" rel="noopener noreferrer" title="Information about this extension" aria-label="Open extension information">i</a>
+          <a class="mw-profile-link mw-profile-link-hidden" href="https://medium.com/@frankfont123" target="_blank" rel="noopener noreferrer" title="Open @frankfont123 on Medium">
             <img src="${chrome.runtime.getURL("author.png")}" alt="Frank Font profile" />
           </a>
           <button id="mw-toggle-panel-size" type="button" title="Expand panel width"><< Expand</button>
@@ -3558,6 +3584,8 @@ function createPanelMarkup() {
 function wirePanelEvents() {
   const launcher = document.getElementById(PANEL_IDS.launcher);
   const panel = document.getElementById(PANEL_IDS.panel);
+  const panelTitleEl = document.getElementById("mw-panel-title");
+  const profileLinkEl = panel ? panel.querySelector(".mw-profile-link") : null;
   if (!launcher || !panel) {
     return;
   }
@@ -3625,6 +3653,18 @@ function wirePanelEvents() {
   }
 
   launcher.addEventListener("click", () => togglePanel(!isPanelVisible()));
+
+  if (panelTitleEl && profileLinkEl instanceof HTMLElement) {
+    panelTitleEl.addEventListener("click", (event) => {
+      if (!event.shiftKey) {
+        return;
+      }
+
+      profileLinkEl.classList.toggle("mw-profile-link-hidden");
+      setStatus(profileLinkEl.classList.contains("mw-profile-link-hidden") ? "Author button hidden." : "Author button revealed.");
+    });
+  }
+
   document.getElementById("mw-toggle-panel-size").addEventListener("click", () => togglePanelExpanded());
   document.getElementById("mw-close-panel").addEventListener("click", () => togglePanel(false));
   panel.addEventListener("scroll", () => {
