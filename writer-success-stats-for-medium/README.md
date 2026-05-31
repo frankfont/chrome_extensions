@@ -188,6 +188,7 @@ The extension should show clear user-facing errors for cases such as:
 
 ## Privacy
 
+- This extension is not designed to share any author information with any websites.
 - Snapshot data remains local in browser extension storage.
 - The extension does not transmit snapshot data to external services.
 
@@ -203,4 +204,7 @@ The extension should show clear user-facing errors for cases such as:
 
 ## Example Panel
 
-![Screenshot](example1.png)
+![Screenshot Collapsed](example1.png)
+
+![Screenshot Expanded](example2.png)
+

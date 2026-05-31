@@ -1344,6 +1344,10 @@ function hasAnyTrackedChange(row, metricFilters) {
   const filters = metricFilters || getDailySummaryMetricFilters();
   const trackedDeltas = [];
 
+  if (row.status && row.status !== "existing") {
+    return true;
+  }
+
   if (filters.presentations) {
     trackedDeltas.push(row.presentationsDelta);
   }
@@ -1405,6 +1409,20 @@ function renderDailyChangesSummary() {
   const changedRows = diffRows
     .filter((row) => hasAnyTrackedChange(row, metricFilters))
     .sort((a, b) => {
+      if (a.status !== b.status) {
+        if (a.status === "new") {
+          return -1;
+        }
+        if (b.status === "new") {
+          return 1;
+        }
+        if (a.status === "existing") {
+          return 1;
+        }
+        if (b.status === "existing") {
+          return -1;
+        }
+      }
       const earningsA = Math.abs(a.earningsDelta || 0);
       const earningsB = Math.abs(b.earningsDelta || 0);
       if (earningsA !== earningsB) {
@@ -1428,21 +1446,28 @@ function renderDailyChangesSummary() {
   }
 
   const items = changedRows.map((row) => {
-    const presentationsTone = toneClass(row.presentationsDelta);
-    const viewsTone = toneClass(row.viewsDelta);
-    const readsTone = toneClass(row.readsDelta);
-    const earningsTone = toneClass(row.earningsDelta);
+    const isNewStory = row.status === "new";
+    const isRemovedStory = row.status === "removed";
+    const presentationsValue = isNewStory ? row.presentationsB : isRemovedStory ? row.presentationsA : row.presentationsDelta;
+    const viewsValue = isNewStory ? row.viewsB : isRemovedStory ? row.viewsA : row.viewsDelta;
+    const readsValue = isNewStory ? row.readsB : isRemovedStory ? row.readsA : row.readsDelta;
+    const earningsValue = isNewStory ? row.earningsB : isRemovedStory ? row.earningsA : row.earningsDelta;
+    const presentationsTone = toneClass(isNewStory || isRemovedStory ? null : row.presentationsDelta);
+    const viewsTone = toneClass(isNewStory || isRemovedStory ? null : row.viewsDelta);
+    const readsTone = toneClass(isNewStory || isRemovedStory ? null : row.readsDelta);
+    const earningsTone = toneClass(isNewStory || isRemovedStory ? null : row.earningsDelta);
     const statusText = row.status === "existing" ? "changed" : row.status;
+    const statusPrefix = isNewStory ? "New story" : isRemovedStory ? "Removed story" : "Changed story";
 
     return `
       <div class="mw-change-item">
         <div class="mw-change-title">${renderStoryTitleHtml(row.storyName, row.storyUrl)}</div>
-        <div class="mw-change-meta">status: ${statusText}</div>
+        <div class="mw-change-meta">${statusPrefix} · status: ${statusText}</div>
         <div class="mw-change-deltas">
-          <span class="${presentationsTone}">Presentations ${formatSignedNumber(row.presentationsDelta)}</span>
-          <span class="${viewsTone}">Views ${formatSignedNumber(row.viewsDelta)}</span>
-          <span class="${readsTone}">Reads ${formatSignedNumber(row.readsDelta)}</span>
-          <span class="${earningsTone}">Earnings ${formatSignedCurrency(row.earningsDelta)}</span>
+          <span class="${presentationsTone}">Presentations ${isNewStory || isRemovedStory ? formatNumber(presentationsValue) : formatSignedNumber(row.presentationsDelta)}</span>
+          <span class="${viewsTone}">Views ${isNewStory || isRemovedStory ? formatNumber(viewsValue) : formatSignedNumber(row.viewsDelta)}</span>
+          <span class="${readsTone}">Reads ${isNewStory || isRemovedStory ? formatNumber(readsValue) : formatSignedNumber(row.readsDelta)}</span>
+          <span class="${earningsTone}">Earnings ${isNewStory || isRemovedStory ? formatCurrency(earningsValue) : formatSignedCurrency(row.earningsDelta)}</span>
         </div>
       </div>
     `;
@@ -2393,10 +2418,12 @@ function renderTrendStoryGroupFilters() {
   });
 }
 
-function getTrendRows(storyName) {
+function getTrendRows(storyName, options = {}) {
   if (!storyName) {
     return [];
   }
+
+  const firstDayStrategy = options.firstDayStrategy === "earliest" ? "earliest" : "latest";
 
   const rows = [];
   getAllMaterializedSnapshots().forEach((snapshot) => {
@@ -2411,21 +2438,36 @@ function getTrendRows(storyName) {
     }
   });
 
-  rows.sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
+  if (!rows.length) {
+    return [];
+  }
 
-  const todayKey = toDateKey(nowIso());
-  const seenPriorDays = new Set();
-  return rows.filter((row) => {
+  rows.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+
+  const rowsByDay = new Map();
+  rows.forEach((row) => {
     const rowDateKey = toDateKey(row.capturedAt);
-    if (rowDateKey === todayKey) {
-      return true;
+    if (!rowsByDay.has(rowDateKey)) {
+      rowsByDay.set(rowDateKey, []);
     }
-    if (seenPriorDays.has(rowDateKey)) {
-      return false;
-    }
-    seenPriorDays.add(rowDateKey);
-    return true;
+    rowsByDay.get(rowDateKey).push(row);
   });
+
+  const dayKeys = Array.from(rowsByDay.keys()).sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+  const selectedRows = dayKeys.map((dayKey, dayIndex) => {
+    const dayRows = rowsByDay.get(dayKey) || [];
+    if (!dayRows.length) {
+      return null;
+    }
+
+    if (dayIndex === 0 && firstDayStrategy === "earliest") {
+      return dayRows[0];
+    }
+
+    return dayRows[dayRows.length - 1];
+  }).filter(Boolean);
+
+  return selectedRows.sort((a, b) => new Date(b.capturedAt).getTime() - new Date(a.capturedAt).getTime());
 }
 
 function formatTrendDateLabel(iso) {
@@ -2579,7 +2621,7 @@ function renderTrendChart(storyName) {
     return;
   }
 
-  const trendRows = getTrendRows(storyName);
+  const trendRows = getTrendRows(storyName, { firstDayStrategy: "earliest" });
   if (!storyName || !trendRows.length) {
     hideTrendChartOverlay();
     return;
