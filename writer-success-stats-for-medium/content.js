@@ -1340,25 +1340,48 @@ function getCompareMetricFilters() {
   };
 }
 
+function getEffectiveMetricDelta(row, metricName) {
+  if (!row) {
+    return null;
+  }
+
+  const deltaKey = `${metricName}Delta`;
+  if (row.status === "existing") {
+    return row[deltaKey];
+  }
+
+  const aKey = `${metricName}A`;
+  const bKey = `${metricName}B`;
+  const rawA = row[aKey];
+  const rawB = row[bKey];
+  const a = rawA === null || rawA === undefined || Number.isNaN(rawA) ? 0 : rawA;
+  const b = rawB === null || rawB === undefined || Number.isNaN(rawB) ? 0 : rawB;
+
+  if (row.status === "new") {
+    return b;
+  }
+  if (row.status === "removed") {
+    return -a;
+  }
+
+  return row[deltaKey];
+}
+
 function hasAnyTrackedChange(row, metricFilters) {
   const filters = metricFilters || getDailySummaryMetricFilters();
   const trackedDeltas = [];
 
-  if (row.status && row.status !== "existing") {
-    return true;
-  }
-
   if (filters.presentations) {
-    trackedDeltas.push(row.presentationsDelta);
+    trackedDeltas.push(getEffectiveMetricDelta(row, "presentations"));
   }
   if (filters.views) {
-    trackedDeltas.push(row.viewsDelta);
+    trackedDeltas.push(getEffectiveMetricDelta(row, "views"));
   }
   if (filters.reads) {
-    trackedDeltas.push(row.readsDelta);
+    trackedDeltas.push(getEffectiveMetricDelta(row, "reads"));
   }
   if (filters.earnings) {
-    trackedDeltas.push(row.earningsDelta);
+    trackedDeltas.push(getEffectiveMetricDelta(row, "earnings"));
   }
 
   if (!trackedDeltas.length) {
@@ -1632,17 +1655,22 @@ function renderDiff(baseId, targetId) {
   };
 
   rows.forEach((row) => {
-    if (metricFilters.presentations && row.presentationsDelta !== null && row.presentationsDelta !== undefined) {
-      totals.presentations += row.presentationsDelta;
+    const presentationsDelta = getEffectiveMetricDelta(row, "presentations");
+    const viewsDelta = getEffectiveMetricDelta(row, "views");
+    const readsDelta = getEffectiveMetricDelta(row, "reads");
+    const earningsDelta = getEffectiveMetricDelta(row, "earnings");
+
+    if (metricFilters.presentations && presentationsDelta !== null && presentationsDelta !== undefined) {
+      totals.presentations += presentationsDelta;
     }
-    if (metricFilters.views && row.viewsDelta !== null && row.viewsDelta !== undefined) {
-      totals.views += row.viewsDelta;
+    if (metricFilters.views && viewsDelta !== null && viewsDelta !== undefined) {
+      totals.views += viewsDelta;
     }
-    if (metricFilters.reads && row.readsDelta !== null && row.readsDelta !== undefined) {
-      totals.reads += row.readsDelta;
+    if (metricFilters.reads && readsDelta !== null && readsDelta !== undefined) {
+      totals.reads += readsDelta;
     }
-    if (metricFilters.earnings && row.earningsDelta !== null && row.earningsDelta !== undefined) {
-      totals.earnings += row.earningsDelta;
+    if (metricFilters.earnings && earningsDelta !== null && earningsDelta !== undefined) {
+      totals.earnings += earningsDelta;
     }
   });
 
@@ -1670,21 +1698,27 @@ function renderDiff(baseId, targetId) {
     </div>
   `;
 
-  const tableRows = rows.map((row) => `
+  const tableRows = rows.map((row) => {
+    const viewsDelta = getEffectiveMetricDelta(row, "views");
+    const readsDelta = getEffectiveMetricDelta(row, "reads");
+    const earningsDelta = getEffectiveMetricDelta(row, "earnings");
+
+    return `
     <tr>
       <td>${renderStoryTitleHtml(row.storyName, row.storyUrl)}</td>
       <td>${row.status}</td>
       <td>${formatNumber(row.viewsA)}</td>
       <td>${formatNumber(row.viewsB)}</td>
-      <td class="${toneClass(row.viewsDelta)}">${formatSignedNumber(row.viewsDelta)}</td>
+      <td class="${toneClass(viewsDelta)}">${formatSignedNumber(viewsDelta)}</td>
       <td>${formatNumber(row.readsA)}</td>
       <td>${formatNumber(row.readsB)}</td>
-      <td class="${toneClass(row.readsDelta)}">${formatSignedNumber(row.readsDelta)}</td>
+      <td class="${toneClass(readsDelta)}">${formatSignedNumber(readsDelta)}</td>
       <td>${formatCurrency(row.earningsA)}</td>
       <td>${formatCurrency(row.earningsB)}</td>
-      <td class="${toneClass(row.earningsDelta)}">${formatSignedCurrency(row.earningsDelta)}</td>
+      <td class="${toneClass(earningsDelta)}">${formatSignedCurrency(earningsDelta)}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
 
   state.diffContainerEl.innerHTML = `
     ${header}
