@@ -158,14 +158,23 @@ Story presence rules:
 
 - The panel has an `Expand`/`Collapse` button to widen the layout for large comparison tables.
 - The floating `WSM` launcher turns green when Reads or Earnings increased in the default daily comparison.
+- Snapshot summary now shows:
+	- `Storage space used (on disk)` from `chrome.storage.local` bytes-in-use.
+	- `Stored snapshots JSON` byte estimate (shown when it meaningfully differs from on-disk usage).
+	- `Estimated full (uncompressed) footprint` byte estimate.
+	- `Storage reduction` percent versus estimated full footprint.
 
 ## Data Management
 
 - Storage uses `chrome.storage.local` and persists across browser sessions.
 - `Prune Snapshots` coalesces each day into one merged full snapshot (max coverage union across that day) and removes same-day duplicates.
 - `Transfer Data` section supports full export/import:
-	- `Export All` writes all snapshots to JSON and copies to clipboard when available.
-	- `Import All` restores snapshots from pasted exported JSON.
+	- `Export All` writes all snapshots to a versioned transfer JSON envelope and copies to clipboard when available.
+	- Export uses `lz-utf16` (pure JavaScript string compression), with plain JSON fallback if compression fails.
+	- Export automatically skips compression when compressed output is larger than original JSON.
+	- `Import All` restores snapshots from compressed transfer envelopes or older plain exported JSON.
+	- `Compression Test` runs a small round-trip compress/decompress test and writes a PASS/FAIL diagnostic report into the Transfer Data text box.
+	- Import compatibility includes: `lz-utf16`, prior `deflate-raw-base64`, and legacy plain JSON exports.
 - Advanced comparison export:
 	- `Advanced Features: Export A/B JSON` is available via Advanced Features controls (Shift + `Run Default Comparison`).
 - `Advanced Features: Delete Data` is hidden by default and is revealed from Advanced Features controls.

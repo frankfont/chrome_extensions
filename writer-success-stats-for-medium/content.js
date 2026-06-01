@@ -28,12 +28,14 @@ const AUTO_SCROLL_WAIT_INTERVAL_MS = 75;
 const AUTO_SCROLL_WAIT_TIMEOUT_MS = 1800;
 const COMPARE_AUTO_RENDER_DEBOUNCE_MS = 150;
 const ROUTE_CHECK_INTERVAL_MS = 500;
+const IO_COMPRESSION_TIMEOUT_MS = 3000;
 const DEFAULT_TREND_GROUP_MAX_SIZE = 50;
 const MIN_TREND_GROUP_MAX_SIZE = 2;
 const MAX_TREND_GROUP_MAX_SIZE = 1000;
 const TREND_COLOR_VIEWS = "#d97706";
 const TREND_COLOR_READS = "#2563eb";
 const TREND_COLOR_EARNINGS = "#16a34a";
+const SNAPSHOT_TRANSFER_FORMAT_VERSION = 2;
 
 const STORAGE_KEYS = {
   snapshots: "mwSnapshots",
@@ -275,6 +277,16 @@ function estimateSnapshotsStorageBytes() {
   }
 }
 
+function estimateMaterializedSnapshotsBytes() {
+  try {
+    const materialized = getAllMaterializedSnapshots();
+    const json = JSON.stringify(materialized || []);
+    return new TextEncoder().encode(json).length;
+  } catch {
+    return 0;
+  }
+}
+
 function parseScaledNumber(text) {
   if (!text) {
     return null;
@@ -419,6 +431,717 @@ function setStorage(payload) {
   });
 }
 
+function getStorageBytesInUse(keys = null) {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.getBytesInUse(keys, (bytesInUse) => {
+      const err = chrome.runtime.lastError;
+      if (err) {
+        reject(new Error(normalizeExtensionRuntimeErrorMessage(err.message)));
+        return;
+      }
+      resolve(Number.isFinite(bytesInUse) ? bytesInUse : 0);
+    });
+  });
+}
+
+function withTimeout(task, timeoutMs, timeoutMessage) {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+
+    Promise.resolve()
+      .then(() => task())
+      .then((result) => {
+        window.clearTimeout(timer);
+        resolve(result);
+      })
+      .catch((err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+function uint8ArrayToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+function base64ToUint8Array(base64Text) {
+  const binary = atob(String(base64Text || ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function deflateRawTextToUint8Array(text) {
+  if (typeof CompressionStream !== "function") {
+    throw new Error("CompressionStream is not available.");
+  }
+
+  const encoder = new TextEncoder();
+  const inputBytes = encoder.encode(text);
+  const stream = new CompressionStream("deflate-raw");
+  const writer = stream.writable.getWriter();
+  await writer.write(inputBytes);
+  await writer.close();
+  const outputBuffer = await new Response(stream.readable).arrayBuffer();
+  return new Uint8Array(outputBuffer);
+}
+
+async function inflateRawUint8ArrayToText(bytes) {
+  if (typeof DecompressionStream !== "function") {
+    throw new Error("DecompressionStream is not available.");
+  }
+
+  const stream = new DecompressionStream("deflate-raw");
+  const writer = stream.writable.getWriter();
+  await writer.write(bytes);
+  await writer.close();
+  const outputBuffer = await new Response(stream.readable).arrayBuffer();
+  return new TextDecoder().decode(outputBuffer);
+}
+
+// Lightweight LZ-style UTF-16 codec (compatible with lz-string format).
+function lzGetBaseValue(alphabet, character) {
+  if (!lzGetBaseValue.cache) {
+    lzGetBaseValue.cache = Object.create(null);
+  }
+  if (!lzGetBaseValue.cache[alphabet]) {
+    const dictionary = Object.create(null);
+    for (let i = 0; i < alphabet.length; i += 1) {
+      dictionary[alphabet.charAt(i)] = i;
+    }
+    lzGetBaseValue.cache[alphabet] = dictionary;
+  }
+  return lzGetBaseValue.cache[alphabet][character];
+}
+
+lzGetBaseValue.cache = null;
+
+function lzCompressToUTF16(input) {
+  if (input === null || input === undefined) {
+    return "";
+  }
+  return `${lzCompress(String(input), 15, (a) => String.fromCharCode(a + 32))} `;
+}
+
+function lzDecompressFromUTF16(compressed) {
+  if (compressed === null || compressed === undefined) {
+    return "";
+  }
+  if (compressed === "") {
+    return "";
+  }
+  return lzDecompress(String(compressed).length, 16384, (index) => String(compressed).charCodeAt(index) - 32);
+}
+
+function lzCompress(uncompressed, bitsPerChar, getCharFromInt) {
+  if (uncompressed === null) {
+    return "";
+  }
+
+  let i;
+  let value;
+  const contextDictionary = Object.create(null);
+  const contextDictionaryToCreate = Object.create(null);
+  let contextC = "";
+  let contextW = "";
+  let contextWC = "";
+  let contextEnlargeIn = 2;
+  let contextDictSize = 3;
+  let contextNumBits = 2;
+  const contextData = [];
+  let contextDataVal = 0;
+  let contextDataPosition = 0;
+
+  for (let ii = 0; ii < uncompressed.length; ii += 1) {
+    contextC = uncompressed.charAt(ii);
+    if (!Object.prototype.hasOwnProperty.call(contextDictionary, contextC)) {
+      contextDictionary[contextC] = contextDictSize;
+      contextDictSize += 1;
+      contextDictionaryToCreate[contextC] = true;
+    }
+
+    contextWC = contextW + contextC;
+    if (Object.prototype.hasOwnProperty.call(contextDictionary, contextWC)) {
+      contextW = contextWC;
+    } else {
+      if (Object.prototype.hasOwnProperty.call(contextDictionaryToCreate, contextW)) {
+        if (contextW.charCodeAt(0) < 256) {
+          for (i = 0; i < contextNumBits; i += 1) {
+            contextDataVal <<= 1;
+            if (contextDataPosition === bitsPerChar - 1) {
+              contextDataPosition = 0;
+              contextData.push(getCharFromInt(contextDataVal));
+              contextDataVal = 0;
+            } else {
+              contextDataPosition += 1;
+            }
+          }
+          value = contextW.charCodeAt(0);
+          for (i = 0; i < 8; i += 1) {
+            contextDataVal = (contextDataVal << 1) | (value & 1);
+            if (contextDataPosition === bitsPerChar - 1) {
+              contextDataPosition = 0;
+              contextData.push(getCharFromInt(contextDataVal));
+              contextDataVal = 0;
+            } else {
+              contextDataPosition += 1;
+            }
+            value >>= 1;
+          }
+        } else {
+          value = 1;
+          for (i = 0; i < contextNumBits; i += 1) {
+            contextDataVal = (contextDataVal << 1) | value;
+            if (contextDataPosition === bitsPerChar - 1) {
+              contextDataPosition = 0;
+              contextData.push(getCharFromInt(contextDataVal));
+              contextDataVal = 0;
+            } else {
+              contextDataPosition += 1;
+            }
+            value = 0;
+          }
+          value = contextW.charCodeAt(0);
+          for (i = 0; i < 16; i += 1) {
+            contextDataVal = (contextDataVal << 1) | (value & 1);
+            if (contextDataPosition === bitsPerChar - 1) {
+              contextDataPosition = 0;
+              contextData.push(getCharFromInt(contextDataVal));
+              contextDataVal = 0;
+            } else {
+              contextDataPosition += 1;
+            }
+            value >>= 1;
+          }
+        }
+
+        contextEnlargeIn -= 1;
+        if (contextEnlargeIn === 0) {
+          contextEnlargeIn = 2 ** contextNumBits;
+          contextNumBits += 1;
+        }
+        delete contextDictionaryToCreate[contextW];
+      } else {
+        value = contextDictionary[contextW];
+        for (i = 0; i < contextNumBits; i += 1) {
+          contextDataVal = (contextDataVal << 1) | (value & 1);
+          if (contextDataPosition === bitsPerChar - 1) {
+            contextDataPosition = 0;
+            contextData.push(getCharFromInt(contextDataVal));
+            contextDataVal = 0;
+          } else {
+            contextDataPosition += 1;
+          }
+          value >>= 1;
+        }
+      }
+
+      contextEnlargeIn -= 1;
+      if (contextEnlargeIn === 0) {
+        contextEnlargeIn = 2 ** contextNumBits;
+        contextNumBits += 1;
+      }
+
+      contextDictionary[contextWC] = contextDictSize;
+      contextDictSize += 1;
+      contextW = String(contextC);
+    }
+  }
+
+  if (contextW !== "") {
+    if (Object.prototype.hasOwnProperty.call(contextDictionaryToCreate, contextW)) {
+      if (contextW.charCodeAt(0) < 256) {
+        for (i = 0; i < contextNumBits; i += 1) {
+          contextDataVal <<= 1;
+          if (contextDataPosition === bitsPerChar - 1) {
+            contextDataPosition = 0;
+            contextData.push(getCharFromInt(contextDataVal));
+            contextDataVal = 0;
+          } else {
+            contextDataPosition += 1;
+          }
+        }
+        value = contextW.charCodeAt(0);
+        for (i = 0; i < 8; i += 1) {
+          contextDataVal = (contextDataVal << 1) | (value & 1);
+          if (contextDataPosition === bitsPerChar - 1) {
+            contextDataPosition = 0;
+            contextData.push(getCharFromInt(contextDataVal));
+            contextDataVal = 0;
+          } else {
+            contextDataPosition += 1;
+          }
+          value >>= 1;
+        }
+      } else {
+        value = 1;
+        for (i = 0; i < contextNumBits; i += 1) {
+          contextDataVal = (contextDataVal << 1) | value;
+          if (contextDataPosition === bitsPerChar - 1) {
+            contextDataPosition = 0;
+            contextData.push(getCharFromInt(contextDataVal));
+            contextDataVal = 0;
+          } else {
+            contextDataPosition += 1;
+          }
+          value = 0;
+        }
+        value = contextW.charCodeAt(0);
+        for (i = 0; i < 16; i += 1) {
+          contextDataVal = (contextDataVal << 1) | (value & 1);
+          if (contextDataPosition === bitsPerChar - 1) {
+            contextDataPosition = 0;
+            contextData.push(getCharFromInt(contextDataVal));
+            contextDataVal = 0;
+          } else {
+            contextDataPosition += 1;
+          }
+          value >>= 1;
+        }
+      }
+
+      contextEnlargeIn -= 1;
+      if (contextEnlargeIn === 0) {
+        contextEnlargeIn = 2 ** contextNumBits;
+        contextNumBits += 1;
+      }
+      delete contextDictionaryToCreate[contextW];
+    } else {
+      value = contextDictionary[contextW];
+      for (i = 0; i < contextNumBits; i += 1) {
+        contextDataVal = (contextDataVal << 1) | (value & 1);
+        if (contextDataPosition === bitsPerChar - 1) {
+          contextDataPosition = 0;
+          contextData.push(getCharFromInt(contextDataVal));
+          contextDataVal = 0;
+        } else {
+          contextDataPosition += 1;
+        }
+        value >>= 1;
+      }
+    }
+
+    contextEnlargeIn -= 1;
+    if (contextEnlargeIn === 0) {
+      contextEnlargeIn = 2 ** contextNumBits;
+      contextNumBits += 1;
+    }
+  }
+
+  value = 2;
+  for (i = 0; i < contextNumBits; i += 1) {
+    contextDataVal = (contextDataVal << 1) | (value & 1);
+    if (contextDataPosition === bitsPerChar - 1) {
+      contextDataPosition = 0;
+      contextData.push(getCharFromInt(contextDataVal));
+      contextDataVal = 0;
+    } else {
+      contextDataPosition += 1;
+    }
+    value >>= 1;
+  }
+
+  while (true) {
+    contextDataVal <<= 1;
+    if (contextDataPosition === bitsPerChar - 1) {
+      contextData.push(getCharFromInt(contextDataVal));
+      break;
+    }
+    contextDataPosition += 1;
+  }
+
+  return contextData.join("");
+}
+
+function lzDecompress(length, resetValue, getNextValue) {
+  const dictionary = [];
+  let next;
+  let enlargeIn = 4;
+  let dictSize = 4;
+  let numBits = 3;
+  let entry = "";
+  const result = [];
+  let i;
+  let w;
+  let bits;
+  let resb;
+  let maxpower;
+  let power;
+  let c;
+  const data = {
+    val: getNextValue(0),
+    position: resetValue,
+    index: 1
+  };
+
+  for (i = 0; i < 3; i += 1) {
+    dictionary[i] = i;
+  }
+
+  bits = 0;
+  maxpower = 2 ** 2;
+  power = 1;
+  while (power !== maxpower) {
+    resb = data.val & data.position;
+    data.position >>= 1;
+    if (data.position === 0) {
+      data.position = resetValue;
+      data.val = getNextValue(data.index);
+      data.index += 1;
+    }
+    bits |= (resb > 0 ? 1 : 0) * power;
+    power <<= 1;
+  }
+
+  switch (bits) {
+    case 0:
+      bits = 0;
+      maxpower = 2 ** 8;
+      power = 1;
+      while (power !== maxpower) {
+        resb = data.val & data.position;
+        data.position >>= 1;
+        if (data.position === 0) {
+          data.position = resetValue;
+          data.val = getNextValue(data.index);
+          data.index += 1;
+        }
+        bits |= (resb > 0 ? 1 : 0) * power;
+        power <<= 1;
+      }
+      c = String.fromCharCode(bits);
+      break;
+    case 1:
+      bits = 0;
+      maxpower = 2 ** 16;
+      power = 1;
+      while (power !== maxpower) {
+        resb = data.val & data.position;
+        data.position >>= 1;
+        if (data.position === 0) {
+          data.position = resetValue;
+          data.val = getNextValue(data.index);
+          data.index += 1;
+        }
+        bits |= (resb > 0 ? 1 : 0) * power;
+        power <<= 1;
+      }
+      c = String.fromCharCode(bits);
+      break;
+    case 2:
+      return "";
+    default:
+      c = "";
+      break;
+  }
+
+  dictionary[3] = c;
+  w = c;
+  result.push(c);
+
+  while (true) {
+    if (data.index > length) {
+      return "";
+    }
+
+    bits = 0;
+    maxpower = 2 ** numBits;
+    power = 1;
+    while (power !== maxpower) {
+      resb = data.val & data.position;
+      data.position >>= 1;
+      if (data.position === 0) {
+        data.position = resetValue;
+        data.val = getNextValue(data.index);
+        data.index += 1;
+      }
+      bits |= (resb > 0 ? 1 : 0) * power;
+      power <<= 1;
+    }
+
+    const code = bits;
+    if (code === 0) {
+      bits = 0;
+      maxpower = 2 ** 8;
+      power = 1;
+      while (power !== maxpower) {
+        resb = data.val & data.position;
+        data.position >>= 1;
+        if (data.position === 0) {
+          data.position = resetValue;
+          data.val = getNextValue(data.index);
+          data.index += 1;
+        }
+        bits |= (resb > 0 ? 1 : 0) * power;
+        power <<= 1;
+      }
+      dictionary[dictSize] = String.fromCharCode(bits);
+      dictSize += 1;
+      next = dictSize - 1;
+      enlargeIn -= 1;
+    } else if (code === 1) {
+      bits = 0;
+      maxpower = 2 ** 16;
+      power = 1;
+      while (power !== maxpower) {
+        resb = data.val & data.position;
+        data.position >>= 1;
+        if (data.position === 0) {
+          data.position = resetValue;
+          data.val = getNextValue(data.index);
+          data.index += 1;
+        }
+        bits |= (resb > 0 ? 1 : 0) * power;
+        power <<= 1;
+      }
+      dictionary[dictSize] = String.fromCharCode(bits);
+      dictSize += 1;
+      next = dictSize - 1;
+      enlargeIn -= 1;
+    } else if (code === 2) {
+      return result.join("");
+    } else {
+      next = code;
+    }
+
+    if (enlargeIn === 0) {
+      enlargeIn = 2 ** numBits;
+      numBits += 1;
+    }
+
+    if (dictionary[next]) {
+      entry = dictionary[next];
+    } else if (next === dictSize) {
+      entry = w + w.charAt(0);
+    } else {
+      return "";
+    }
+
+    result.push(entry);
+    dictionary[dictSize] = w + entry.charAt(0);
+    dictSize += 1;
+    enlargeIn -= 1;
+
+    w = entry;
+
+    if (enlargeIn === 0) {
+      enlargeIn = 2 ** numBits;
+      numBits += 1;
+    }
+  }
+}
+
+async function encodeTransferPayload(payloadObject) {
+  const payloadJson = JSON.stringify(payloadObject);
+  const originalBytes = new TextEncoder().encode(payloadJson).length;
+
+  let encoding = "plain-json";
+  let encodedPayload = payloadJson;
+  let compressedBytes = originalBytes;
+  let warning = "";
+
+  try {
+    const compressedUtf16 = lzCompressToUTF16(payloadJson);
+    if (!compressedUtf16) {
+      throw new Error("LZ compression returned empty output.");
+    }
+    const candidateBytes = new TextEncoder().encode(compressedUtf16).length;
+    if (candidateBytes < originalBytes) {
+      encoding = "lz-utf16";
+      encodedPayload = compressedUtf16;
+      compressedBytes = candidateBytes;
+    } else {
+      warning = `Compression skipped: lz-utf16 grew payload (${candidateBytes} > ${originalBytes} bytes).`;
+    }
+  } catch (err) {
+    warning = err && err.message ? String(err.message) : "Compression unavailable.";
+  }
+
+  return {
+    formatVersion: SNAPSHOT_TRANSFER_FORMAT_VERSION,
+    exportedAt: nowIso(),
+    encoding,
+    encodedPayload,
+    originalBytes,
+    compressedBytes,
+    warning
+  };
+}
+
+async function decodeTransferPayload(rawJson) {
+  let parsedEnvelope;
+  try {
+    parsedEnvelope = JSON.parse(rawJson);
+  } catch {
+    throw new Error("Import JSON is invalid.");
+  }
+
+  const looksLikeEnvelope =
+    parsedEnvelope &&
+    typeof parsedEnvelope === "object" &&
+    typeof parsedEnvelope.encoding === "string" &&
+    typeof parsedEnvelope.encodedPayload === "string";
+
+  if (!looksLikeEnvelope) {
+    return {
+      payload: parsedEnvelope,
+      decodeInfo: {
+        formatVersion: 1,
+        encoding: "legacy-json",
+        originalBytes: new TextEncoder().encode(rawJson).length,
+        compressedBytes: new TextEncoder().encode(rawJson).length
+      }
+    };
+  }
+
+  if (parsedEnvelope.encoding === "plain-json") {
+    try {
+      return {
+        payload: JSON.parse(parsedEnvelope.encodedPayload),
+        decodeInfo: {
+          formatVersion: Number(parsedEnvelope.formatVersion) || SNAPSHOT_TRANSFER_FORMAT_VERSION,
+          encoding: "plain-json",
+          originalBytes: Number(parsedEnvelope.originalBytes) || new TextEncoder().encode(parsedEnvelope.encodedPayload).length,
+          compressedBytes: Number(parsedEnvelope.compressedBytes) || new TextEncoder().encode(parsedEnvelope.encodedPayload).length
+        }
+      };
+    } catch {
+      throw new Error("Import payload JSON is invalid.");
+    }
+  }
+
+  if (parsedEnvelope.encoding === "deflate-raw-base64") {
+    let inflated;
+    try {
+      inflated = await withTimeout(
+        () => inflateRawUint8ArrayToText(base64ToUint8Array(parsedEnvelope.encodedPayload)),
+        IO_COMPRESSION_TIMEOUT_MS,
+        "Decompression timed out."
+      );
+    } catch {
+      throw new Error("Unable to decompress import payload.");
+    }
+
+    try {
+      return {
+        payload: JSON.parse(inflated),
+        decodeInfo: {
+          formatVersion: Number(parsedEnvelope.formatVersion) || SNAPSHOT_TRANSFER_FORMAT_VERSION,
+          encoding: "deflate-raw-base64",
+          originalBytes: Number(parsedEnvelope.originalBytes) || new TextEncoder().encode(inflated).length,
+          compressedBytes: Number(parsedEnvelope.compressedBytes) || base64ToUint8Array(parsedEnvelope.encodedPayload).length
+        }
+      };
+    } catch {
+      throw new Error("Decompressed payload is not valid JSON.");
+    }
+  }
+
+  if (parsedEnvelope.encoding === "lz-utf16") {
+    let decompressed;
+    try {
+      decompressed = lzDecompressFromUTF16(parsedEnvelope.encodedPayload);
+    } catch {
+      throw new Error("Unable to decompress import payload.");
+    }
+
+    try {
+      return {
+        payload: JSON.parse(decompressed),
+        decodeInfo: {
+          formatVersion: Number(parsedEnvelope.formatVersion) || SNAPSHOT_TRANSFER_FORMAT_VERSION,
+          encoding: "lz-utf16",
+          originalBytes: Number(parsedEnvelope.originalBytes) || new TextEncoder().encode(decompressed).length,
+          compressedBytes: Number(parsedEnvelope.compressedBytes) || new TextEncoder().encode(parsedEnvelope.encodedPayload).length
+        }
+      };
+    } catch {
+      throw new Error("Decompressed payload is not valid JSON.");
+    }
+  }
+
+  throw new Error(`Unsupported import encoding: ${parsedEnvelope.encoding}`);
+}
+
+async function runTransferCompressionSelfTest() {
+  const samplePayload = {
+    type: "compression-self-test",
+    createdAt: nowIso(),
+    stories: [
+      {
+        storyName: "Sample Story One",
+        presentations: 12,
+        views: 120,
+        reads: 34,
+        earnings: 5.67,
+        mediumUrl: "https://medium.com/me/stats/post/sample1",
+        storyId: "sample1"
+      },
+      {
+        storyName: "Sample Story Two",
+        presentations: 240,
+        views: 1234,
+        reads: 456,
+        earnings: 78.9,
+        mediumUrl: "https://medium.com/me/stats/post/sample2",
+        storyId: "sample2"
+      }
+    ]
+  };
+
+  const sampleJson = JSON.stringify(samplePayload);
+  const originalBytes = new TextEncoder().encode(sampleJson).length;
+  const outputEl = document.getElementById("mw-transfer-json-output");
+  const lines = [];
+
+  lines.push(`Compression self-test at ${new Date().toLocaleString("en-US")}`);
+  lines.push(`CompressionStream available: ${typeof CompressionStream === "function" ? "yes" : "no"}`);
+  lines.push(`DecompressionStream available: ${typeof DecompressionStream === "function" ? "yes" : "no"}`);
+  lines.push(`Input JSON bytes: ${originalBytes}`);
+
+  try {
+    const compressedUtf16 = lzCompressToUTF16(sampleJson);
+    const compressedBytes = new TextEncoder().encode(compressedUtf16).length;
+    const restoredJson = lzDecompressFromUTF16(compressedUtf16);
+    const roundTripOk = restoredJson === sampleJson;
+    const ratio = originalBytes > 0 ? compressedBytes / originalBytes : 1;
+
+    lines.push("Result: PASS");
+    lines.push("Encoding: lz-utf16");
+    lines.push(`Compressed bytes: ${compressedBytes}`);
+    lines.push(`Compression ratio: ${(ratio * 100).toFixed(1)}%`);
+    lines.push(`Round-trip integrity: ${roundTripOk ? "OK" : "MISMATCH"}`);
+
+    if (!roundTripOk) {
+      throw new Error("Round-trip mismatch after decompression.");
+    }
+
+    if (outputEl) {
+      outputEl.value = lines.join("\n");
+    }
+    setStatus(`Compression self-test passed (${formatByteSize(compressedBytes)} from ${formatByteSize(originalBytes)}).`);
+  } catch (err) {
+    const message = err && err.message ? String(err.message) : "Unknown compression test failure.";
+    lines.push("Result: FAIL");
+    lines.push(`Error: ${message}`);
+    if (outputEl) {
+      outputEl.value = lines.join("\n");
+    }
+    setStatus(`Compression self-test failed: ${message}`, true);
+  }
+}
+
 function setStatus(message, isError = false) {
   if (!state.statusEl) {
     return;
@@ -455,6 +1178,15 @@ function setSnapshotCaptureUiBusy(isBusy, activeButtonId = "") {
   }
 }
 
+function setBusyStatusMessage(message) {
+  if (!state.statusEl) {
+    return;
+  }
+  state.statusEl.textContent = message;
+  state.statusEl.classList.add("mw-status-busy");
+  state.statusEl.style.color = "#7a2f00";
+}
+
 function countPotentialRows() {
   const tableRows = document.querySelectorAll("table tbody tr, table tr").length;
   const storyLinks = document.querySelectorAll("a[href*='/p/']").length;
@@ -483,10 +1215,21 @@ async function waitForPageGrowth(previousCount, previousScrollHeight) {
   return false;
 }
 
-async function autoScrollForDataRows() {
+async function autoScrollForDataRows(onProgress) {
+  const reportProgress = (message) => {
+    if (typeof onProgress === "function") {
+      onProgress(message);
+    }
+  };
+
+  // Start from top for deterministic lazy-load behavior before scanning downward.
+  window.scrollTo(0, 0);
+  await sleep(AUTO_SCROLL_WAIT_INTERVAL_MS);
+
   let stableLoops = 0;
   let lastCount = countPotentialRows();
   let lastScrollHeight = getDocumentScrollHeight();
+  reportProgress(`Loading stats rows: start at top, found ${lastCount} candidate row(s).`);
 
   for (let i = 0; i < AUTO_SCROLL_MAX_ITERATIONS; i += 1) {
     window.scrollTo(0, document.body.scrollHeight);
@@ -505,6 +1248,10 @@ async function autoScrollForDataRows() {
     if (currentScrollHeight > lastScrollHeight) {
       lastScrollHeight = currentScrollHeight;
     }
+
+    reportProgress(
+      `Loading stats rows: pass ${i + 1}/${AUTO_SCROLL_MAX_ITERATIONS}, rows ${currentCount}, stable passes ${stableLoops}/${AUTO_SCROLL_STABLE_ITERATIONS}.`
+    );
 
     if (stableLoops >= AUTO_SCROLL_STABLE_ITERATIONS) {
       let confirmationPassed = true;
@@ -529,6 +1276,7 @@ async function autoScrollForDataRows() {
       }
 
       if (confirmationPassed) {
+        reportProgress(`Loading stats rows complete: ${lastCount} candidate row(s) detected.`);
         break;
       }
     }
@@ -1032,7 +1780,9 @@ async function captureSnapshot(mode, preferredStorageMode = "auto", triggerButto
       throw new Error("Delta snapshot requires at least one prior snapshot. Capture a full snapshot first.");
     }
 
-    await autoScrollForDataRows();
+    await autoScrollForDataRows((message) => {
+      setBusyStatusMessage(message);
+    });
 
     if (!hasAnyStatsMetricValueOnPage()) {
       throw new Error("Snapshot not saved: stats values (Presentations, Views, Reads, Earnings) are not visible on the page yet.");
@@ -2101,7 +2851,19 @@ async function exportAllSnapshotsJson() {
     mwLastAutoSnapshotDate: result[STORAGE_KEYS.lastAutoSnapshotDate] || ""
   };
 
-  const json = JSON.stringify(payload, null, 2);
+  const encoded = await encodeTransferPayload(payload);
+  const json = JSON.stringify(
+    {
+      formatVersion: encoded.formatVersion,
+      exportedAt: encoded.exportedAt,
+      encoding: encoded.encoding,
+      originalBytes: encoded.originalBytes,
+      compressedBytes: encoded.compressedBytes,
+      encodedPayload: encoded.encodedPayload
+    },
+    null,
+    2
+  );
   const outputEl = document.getElementById("mw-transfer-json-output");
   if (outputEl) {
     outputEl.value = json;
@@ -2122,10 +2884,11 @@ async function exportAllSnapshotsJson() {
     outputEl.select();
   }
 
+  const statusSuffix = encoded.warning ? ` Compression fallback used: ${encoded.warning}` : "";
   setStatus(
     copied
-      ? "All snapshots exported and copied to clipboard."
-      : "All snapshots exported. Clipboard unavailable; copy from the text box.",
+      ? `All snapshots exported (${encoded.encoding}, ${formatByteSize(encoded.compressedBytes)} from ${formatByteSize(encoded.originalBytes)}) and copied to clipboard.${statusSuffix}`
+      : `All snapshots exported (${encoded.encoding}, ${formatByteSize(encoded.compressedBytes)} from ${formatByteSize(encoded.originalBytes)}). Clipboard unavailable; copy from the text box.${statusSuffix}`,
     false
   );
 }
@@ -2135,12 +2898,8 @@ async function importAllSnapshotsJson(rawJson) {
     throw new Error("Paste exported JSON into the box before importing.");
   }
 
-  let parsed;
-  try {
-    parsed = JSON.parse(rawJson);
-  } catch {
-    throw new Error("Import JSON is invalid.");
-  }
+  const decoded = await decodeTransferPayload(rawJson);
+  const parsed = decoded.payload;
 
   const importedSnapshots = Array.isArray(parsed.mwSnapshots) ? parsed.mwSnapshots : [];
   const importedLastAutoDate = parsed.mwLastAutoSnapshotDate || "";
@@ -2154,7 +2913,9 @@ async function importAllSnapshotsJson(rawJson) {
   state.snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
   rebuildMaterializedSnapshotCache();
   refreshPanelData();
-  setStatus(`Imported ${state.snapshots.length} snapshots.`);
+  setStatus(
+    `Imported ${state.snapshots.length} snapshots (${decoded.decodeInfo.encoding}, ${formatByteSize(decoded.decodeInfo.compressedBytes)} -> ${formatByteSize(decoded.decodeInfo.originalBytes)}).`
+  );
 }
 
 function mergeDailyStories(daySnapshots, mergedCapturedAt) {
@@ -2885,17 +3646,38 @@ function togglePanelExpanded() {
   }
 }
 
-function refreshSnapshotSummary() {
+async function refreshSnapshotSummary() {
   if (!state.summaryEl) {
     return;
   }
   const count = state.snapshots.length;
   const latest = count ? state.snapshots[count - 1] : null;
-  const estimatedBytes = estimateSnapshotsStorageBytes();
+  const storedJsonBytes = estimateSnapshotsStorageBytes();
+  const materializedBytes = estimateMaterializedSnapshotsBytes();
+
+  let bytesOnDisk = storedJsonBytes;
+  try {
+    bytesOnDisk = await getStorageBytesInUse([STORAGE_KEYS.snapshots]);
+  } catch {
+    bytesOnDisk = storedJsonBytes;
+  }
+
+  const reductionPercent = materializedBytes > 0
+    ? ((1 - (bytesOnDisk / materializedBytes)) * 100)
+    : 0;
+  const reductionLabel = reductionPercent >= 0
+    ? `${reductionPercent.toFixed(1)}% smaller vs estimated full`
+    : `${Math.abs(reductionPercent).toFixed(1)}% larger vs estimated full`;
+  const bytesDiff = Math.abs(bytesOnDisk - storedJsonBytes);
+  const showStoredJsonLine = bytesDiff > 1024;
+
   state.summaryEl.innerHTML = `
     <div><strong>Snapshots:</strong> ${count}</div>
     <div><strong>Latest:</strong> ${latest ? formatTimestamp(latest.capturedAt) : "None"}</div>
-    <div><strong>Storage space used:</strong> ${formatByteSize(estimatedBytes)}</div>
+    <div><strong>Storage space used (on disk):</strong> ${formatByteSize(bytesOnDisk)}</div>
+    ${showStoredJsonLine ? `<div><strong>Stored snapshots JSON:</strong> ${formatByteSize(storedJsonBytes)}</div>` : ""}
+    <div><strong>Estimated full (uncompressed) footprint:</strong> ${formatByteSize(materializedBytes)}</div>
+    <div><strong>Storage reduction:</strong> ${reductionLabel}</div>
   `;
 }
 
@@ -3234,6 +4016,7 @@ function createPanelMarkup() {
       }
       #${PANEL_IDS.panel} #mw-export-all,
       #${PANEL_IDS.panel} #mw-import-all,
+      #${PANEL_IDS.panel} #mw-compression-test,
       #${PANEL_IDS.panel} #mw-audit-compare,
       #${PANEL_IDS.panel} #mw-export-audit-json,
       #${PANEL_IDS.panel} #mw-export-compare-json,
@@ -3245,6 +4028,7 @@ function createPanelMarkup() {
       }
       #${PANEL_IDS.panel} #mw-export-all:hover,
       #${PANEL_IDS.panel} #mw-import-all:hover,
+      #${PANEL_IDS.panel} #mw-compression-test:hover,
       #${PANEL_IDS.panel} #mw-audit-compare:hover,
       #${PANEL_IDS.panel} #mw-export-audit-json:hover,
       #${PANEL_IDS.panel} #mw-export-compare-json:hover,
@@ -3253,6 +4037,7 @@ function createPanelMarkup() {
       }
       #${PANEL_IDS.panel} #mw-export-all:focus-visible,
       #${PANEL_IDS.panel} #mw-import-all:focus-visible,
+      #${PANEL_IDS.panel} #mw-compression-test:focus-visible,
       #${PANEL_IDS.panel} #mw-audit-compare:focus-visible,
       #${PANEL_IDS.panel} #mw-export-audit-json:focus-visible,
       #${PANEL_IDS.panel} #mw-export-compare-json:focus-visible,
@@ -3681,6 +4466,7 @@ function createPanelMarkup() {
         <div class="mw-row">
           <button id="mw-export-all" type="button">Export All</button>
           <button id="mw-import-all" type="button">Import All</button>
+          <button id="mw-compression-test" type="button">Compression Test</button>
         </div>
         <textarea id="mw-transfer-json-output" class="mw-export-output" placeholder="Exported snapshot data appears here. Paste exported JSON here, then click Import All."></textarea>
       </div>
@@ -3972,6 +4758,10 @@ function wirePanelEvents() {
     } catch (err) {
       setStatus(err.message || "Import all failed.", true);
     }
+  });
+
+  document.getElementById("mw-compression-test").addEventListener("click", async () => {
+    await runTransferCompressionSelfTest();
   });
 
   document.getElementById("mw-audit-compare").addEventListener("click", () => {
