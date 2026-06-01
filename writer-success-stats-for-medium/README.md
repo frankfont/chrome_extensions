@@ -180,12 +180,17 @@ Story presence rules:
 ## Data Management
 
 - Storage uses `chrome.storage.local` and persists across browser sessions.
+- New snapshots store stable `storyRef` identities (from the master map) with only required metric fields; display and compare views materialize full story details by resolving refs through the master map.
 - `Prune Snapshots` coalesces each day into one merged full snapshot (max coverage union across that day) and removes same-day duplicates.
 - `Transfer Data` section supports full export/import:
 	- `Export All` writes all snapshots to a versioned transfer JSON envelope and copies to clipboard when available.
+	- `Export All` is intentionally transfer-encoded when compression helps: the output may contain an `encoding` field such as `lz-utf16` plus an `encodedPayload` string instead of plain readable snapshot JSON.
+	- `Export Latest Snapshot` writes the latest raw stored snapshot JSON (internal storage shape) to the Transfer Data text box and copies it to clipboard when available.
+	- `Export Latest Snapshot` shows the actual internal snapshot shape, so sparse snapshots may contain only changed rows and can legitimately export `stories: []` when no changes were detected versus the baseline snapshot.
+	- Transfer export remains in traditional full story-row format (`storyName`, `storyId`, `mediumUrl`, metrics) for compatibility, even though internal snapshot storage is `storyRef`-based.
 	- Export uses `lz-utf16` (pure JavaScript string compression), with plain JSON fallback if compression fails.
 	- Export automatically skips compression when compressed output is larger than original JSON.
-	- `Import All` restores snapshots from compressed transfer envelopes or older plain exported JSON.
+	- `Import All` restores traditional full-field snapshot exports and converts them into internal `storyRef`-based storage.
 	- `Compression Test` runs a small round-trip compress/decompress test and writes a PASS/FAIL diagnostic report into the Transfer Data text box.
 	- `Create Master Map` creates/updates a persistent master story map in local storage by scanning all existing snapshots; it does not rewrite or transform snapshot rows.
 	- Master map now stores story presentation metadata from the stats page (`min read` and published date) and tracks changes over time in `presentationMetadataHistory` per story.

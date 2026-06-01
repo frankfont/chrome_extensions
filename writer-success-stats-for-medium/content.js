@@ -105,7 +105,8 @@ const state = {
   compareSortKey: "",
   compareSortDirection: "asc",
   hasMasterStoryMap: null,
-  masterMapPresenceRefreshInFlight: false
+  masterMapPresenceRefreshInFlight: false,
+  masterStoryMap: null
 };
 
 function applyMasterMapActionButtonLabel() {
@@ -127,10 +128,167 @@ async function refreshMasterMapPresence(force = false) {
     const raw = result[STORAGE_KEYS.masterStoryMap];
     const hasMap = !!(raw && typeof raw === "object" && raw.storiesByRef && typeof raw.storiesByRef === "object");
     state.hasMasterStoryMap = hasMap;
+    state.masterStoryMap = hasMap ? normalizeMasterStoryMap(raw) : null;
   } finally {
     state.masterMapPresenceRefreshInFlight = false;
     applyMasterMapActionButtonLabel();
+    rebuildMaterializedSnapshotCache();
   }
+}
+
+function getMasterStoryEntryByRef(ref) {
+  const normalizedRef = String(ref || "").trim();
+  if (!normalizedRef || !state.masterStoryMap || !state.masterStoryMap.storiesByRef) {
+    return null;
+  }
+  return state.masterStoryMap.storiesByRef[normalizedRef] || null;
+}
+
+function findMasterStoryRefForStoryLike(storyLike, masterMap = state.masterStoryMap) {
+  if (!masterMap) {
+    return "";
+  }
+
+  const normalizedMap = normalizeMasterStoryMap(masterMap);
+  const canonicalStoryName = extractCanonicalStoryTitle(storyLike && storyLike.storyName ? storyLike.storyName : "");
+  const normalizedName = normalizeComparisonStoryName(canonicalStoryName);
+  const normalizedUrl = normalizeMediumStoryUrl(storyLike && storyLike.mediumUrl ? storyLike.mediumUrl : "").toLowerCase();
+  const storyIdFromUrl = getStoryIdFromUrl(storyLike && storyLike.mediumUrl ? storyLike.mediumUrl : "");
+  const normalizedStoryId = String((storyLike && storyLike.storyId) || storyIdFromUrl || "").trim().toLowerCase();
+
+  if (normalizedStoryId && normalizedMap.indexes.byStoryId[normalizedStoryId]) {
+    return normalizedMap.indexes.byStoryId[normalizedStoryId];
+  }
+  if (normalizedUrl && normalizedMap.indexes.byUrl[normalizedUrl]) {
+    return normalizedMap.indexes.byUrl[normalizedUrl];
+  }
+  if (normalizedName && normalizedMap.indexes.byNormalizedName[normalizedName]) {
+    return normalizedMap.indexes.byNormalizedName[normalizedName];
+  }
+
+  return "";
+}
+
+async function attachStoryRefsToRows(rows, capturedAt) {
+  const sourceRows = Array.isArray(rows) ? rows : [];
+  if (!sourceRows.length) {
+    return [];
+  }
+
+  let masterMap = state.masterStoryMap ? normalizeMasterStoryMap(state.masterStoryMap) : createEmptyMasterStoryMap();
+  let touched = !state.masterStoryMap;
+
+  const nextRows = sourceRows.map((row) => {
+    const upsert = upsertMasterMapStory(masterMap, row, capturedAt || nowIso());
+    if (upsert.ref) {
+      touched = true;
+    }
+
+    return {
+      ...row,
+      storyRef: upsert.ref || String(row && row.storyRef ? row.storyRef : "").trim()
+    };
+  });
+
+  if (touched) {
+    masterMap.totalStories = Object.keys(masterMap.storiesByRef || {}).length;
+    masterMap.updatedAt = nowIso();
+    await setStorage({
+      [STORAGE_KEYS.masterStoryMap]: masterMap
+    });
+    state.masterStoryMap = masterMap;
+    state.hasMasterStoryMap = true;
+    applyMasterMapActionButtonLabel();
+  }
+
+  return nextRows;
+}
+
+function toTraditionalStoryRecord(story, fallbackTimestamp) {
+  const masterEntry = getMasterStoryEntryByRef(story && story.storyRef ? story.storyRef : "") || {};
+  const storyName = String((story && story.storyName) || masterEntry.storyName || "").trim();
+  return {
+    key: story && story.key ? story.key : `${storyName || story.storyRef || "story"}__${fallbackTimestamp}`,
+    storyName,
+    presentations: story && story.presentations !== undefined ? story.presentations : null,
+    views: story && story.views !== undefined ? story.views : null,
+    reads: story && story.reads !== undefined ? story.reads : null,
+    earnings: story && story.earnings !== undefined ? story.earnings : null,
+    timestamp: (story && story.timestamp) || fallbackTimestamp,
+    mediumUrl: String((story && story.mediumUrl) || masterEntry.mediumUrl || "").trim(),
+    storyId: String((story && story.storyId) || masterEntry.storyId || "").trim(),
+    removed: !!(story && story.removed)
+  };
+}
+
+function buildTraditionalSnapshotsForTransfer() {
+  return getAllMaterializedSnapshots().map((snapshot) => ({
+    id: snapshot.id,
+    mode: snapshot.mode,
+    capturedAt: snapshot.capturedAt,
+    sourceUrl: snapshot.sourceUrl,
+    storageMode: "full",
+    stories: Array.isArray(snapshot.stories)
+      ? snapshot.stories.map((story) => toTraditionalStoryRecord(story, snapshot.capturedAt))
+      : []
+  }));
+}
+
+async function convertImportedSnapshotsToInternal(importedSnapshots) {
+  const list = Array.isArray(importedSnapshots) ? [...importedSnapshots] : [];
+  list.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+
+  let masterMap = state.masterStoryMap ? normalizeMasterStoryMap(state.masterStoryMap) : createEmptyMasterStoryMap();
+  let touched = !state.masterStoryMap;
+
+  const converted = list.map((snapshot) => {
+    const capturedAt = snapshot && snapshot.capturedAt ? snapshot.capturedAt : nowIso();
+    const stories = Array.isArray(snapshot && snapshot.stories) ? snapshot.stories : [];
+
+    const nextStories = stories.map((story) => {
+      const existingRef = String(story && story.storyRef ? story.storyRef : "").trim();
+      let storyRef = existingRef;
+      if (!storyRef) {
+        const upsert = upsertMasterMapStory(masterMap, story, capturedAt);
+        storyRef = upsert.ref || "";
+        if (storyRef) {
+          touched = true;
+        }
+      }
+
+      return {
+        storyRef,
+        presentations: story && story.presentations !== undefined ? story.presentations : null,
+        views: story && story.views !== undefined ? story.views : null,
+        reads: story && story.reads !== undefined ? story.reads : null,
+        earnings: story && story.earnings !== undefined ? story.earnings : null,
+        timestamp: (story && story.timestamp) || capturedAt,
+        removed: !!(story && story.removed)
+      };
+    });
+
+    return {
+      id: snapshot && snapshot.id ? snapshot.id : capturedAt,
+      mode: snapshot && snapshot.mode ? snapshot.mode : "import",
+      capturedAt,
+      sourceUrl: snapshot && snapshot.sourceUrl ? snapshot.sourceUrl : "",
+      storageMode: snapshot && snapshot.storageMode ? snapshot.storageMode : "full",
+      stories: nextStories
+    };
+  });
+
+  if (touched) {
+    masterMap.totalStories = Object.keys(masterMap.storiesByRef || {}).length;
+    masterMap.updatedAt = nowIso();
+    await setStorage({
+      [STORAGE_KEYS.masterStoryMap]: masterMap
+    });
+    state.masterStoryMap = masterMap;
+    state.hasMasterStoryMap = true;
+    applyMasterMapActionButtonLabel();
+  }
+
+  return converted;
 }
 
 function setAuditSectionVisible(visible) {
@@ -2031,29 +2189,37 @@ function normalizeStoryRecord(story, fallbackTimestamp) {
     return null;
   }
 
-  const normalizedStoryName = String(story.storyName || "").trim();
-  if (!normalizedStoryName) {
+  const storyRef = String(story.storyRef || "").trim();
+  const masterEntry = getMasterStoryEntryByRef(storyRef) || {};
+  const normalizedStoryName = String(story.storyName || masterEntry.storyName || "").trim();
+  if (!normalizedStoryName && !storyRef) {
     return null;
   }
 
+  const identityPart = storyRef || normalizedStoryName || "story";
+
   return {
-    key: story.key || `${normalizedStoryName}__${fallbackTimestamp}`,
+    key: story.key || `${identityPart}__${fallbackTimestamp}`,
+    storyRef,
     storyName: normalizedStoryName,
     presentations: story.presentations !== undefined ? story.presentations : null,
     views: story.views !== undefined ? story.views : null,
     reads: story.reads !== undefined ? story.reads : null,
     earnings: story.earnings !== undefined ? story.earnings : null,
     timestamp: story.timestamp || fallbackTimestamp,
-    mediumUrl: story.mediumUrl || "",
-    storyId: story.storyId || "",
+    mediumUrl: story.mediumUrl || masterEntry.mediumUrl || "",
+    storyId: story.storyId || masterEntry.storyId || "",
     removed: !!story.removed
   };
 }
 
 function getSnapshotCacheVersion() {
+  const masterMapMarker = state.masterStoryMap
+    ? `${state.masterStoryMap.updatedAt || ""}:${state.masterStoryMap.totalStories || 0}`
+    : "no-map";
   return state.snapshots
     .map((snapshot) => `${snapshot.id}:${snapshot.storageMode || "full"}:${Array.isArray(snapshot.stories) ? snapshot.stories.length : 0}`)
-    .join("|");
+    .join("|") + `|map:${masterMapMarker}`;
 }
 
 function rebuildMaterializedSnapshotCache() {
@@ -2079,7 +2245,7 @@ function rebuildMaterializedSnapshotCache() {
           ...story,
           removed: false,
           timestamp: snapshot.capturedAt,
-          key: `${story.storyName}__${snapshot.capturedAt}`
+          key: `${story.storyRef || story.storyId || story.storyName || "story"}__${snapshot.capturedAt}`
         });
       });
     } else {
@@ -2092,7 +2258,7 @@ function rebuildMaterializedSnapshotCache() {
           ...story,
           removed: false,
           timestamp: snapshot.capturedAt,
-          key: `${story.storyName}__${snapshot.capturedAt}`
+          key: `${story.storyRef || story.storyId || story.storyName || "story"}__${snapshot.capturedAt}`
         });
       });
       hasAnchor = true;
@@ -2160,18 +2326,16 @@ function findReadDecreasesComparedToSnapshot(rows, previousSnapshot) {
   return decreases;
 }
 
-function buildSnapshot(rows, mode, preferredStorageMode = "auto") {
-  const capturedAt = nowIso();
+function buildSnapshot(rows, mode, preferredStorageMode = "auto", capturedAt = nowIso()) {
   const fullStories = rows.map((row) => ({
-    key: `${row.storyName}__${capturedAt}`,
-    storyName: row.storyName,
+    key: `${row.storyRef || row.storyId || row.storyName || "story"}__${capturedAt}`,
+    storyRef: String(row.storyRef || "").trim(),
     presentations: row.presentations,
     views: row.views,
     reads: row.reads,
     earnings: row.earnings,
     timestamp: capturedAt,
-    mediumUrl: row.mediumUrl || "",
-    storyId: row.storyId || ""
+    removed: false
   }));
 
   const latestSnapshot = findLatestSnapshot();
@@ -2212,16 +2376,15 @@ function buildSnapshot(rows, mode, preferredStorageMode = "auto") {
     }
 
     if (previous && !current) {
+      const removedStoryRef = previous.storyRef || findMasterStoryRefForStoryLike(previous);
       sparseStories.push({
-        key: `${previous.storyName}__${capturedAt}`,
-        storyName: previous.storyName,
+        key: `${removedStoryRef || previous.storyId || previous.storyName || "story"}__${capturedAt}`,
+        storyRef: removedStoryRef,
         presentations: null,
         views: null,
         reads: null,
         earnings: null,
         timestamp: capturedAt,
-        mediumUrl: previous.mediumUrl || "",
-        storyId: previous.storyId || "",
         removed: true
       });
       return;
@@ -2232,13 +2395,11 @@ function buildSnapshot(rows, mode, preferredStorageMode = "auto") {
     }
 
     const changed =
-      previous.storyName !== current.storyName ||
+      previous.storyRef !== current.storyRef ||
       previous.presentations !== current.presentations ||
       previous.views !== current.views ||
       previous.reads !== current.reads ||
-      previous.earnings !== current.earnings ||
-      previous.mediumUrl !== current.mediumUrl ||
-      previous.storyId !== current.storyId;
+      previous.earnings !== current.earnings;
 
     if (changed) {
       sparseStories.push(current);
@@ -2355,7 +2516,9 @@ async function captureSnapshot(mode, preferredStorageMode = "auto", triggerButto
       );
     }
 
-    const snapshot = buildSnapshot(rows, mode, preferredStorageMode);
+    const capturedAt = nowIso();
+    const rowsWithRefs = await attachStoryRefsToRows(rows, capturedAt);
+    const snapshot = buildSnapshot(rowsWithRefs, mode, preferredStorageMode, capturedAt);
     state.snapshots.push(snapshot);
     state.snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
     await persistSnapshots();
@@ -2520,10 +2683,22 @@ function refreshDaysAgoCompareButtonsVisibility() {
 }
 
 function getStoryKey(story) {
-  if (story.storyId) {
-    return `id:${story.storyId}`;
+  const explicitStoryId = String(story && story.storyId ? story.storyId : "").trim();
+  const urlStoryId = getStoryIdFromUrl(story && story.mediumUrl ? story.mediumUrl : "");
+  const storyRef = String(story && story.storyRef ? story.storyRef : "").trim();
+  const masterEntry = storyRef ? getMasterStoryEntryByRef(storyRef) : null;
+  const masterStoryId = String(masterEntry && masterEntry.storyId ? masterEntry.storyId : "").trim();
+  const storyId = explicitStoryId || urlStoryId || masterStoryId;
+  if (storyId) {
+    return `id:${storyId.toLowerCase()}`;
   }
-  return `name:${story.storyName.toLowerCase()}`;
+
+  if (storyRef) {
+    return `ref:${storyRef}`;
+  }
+
+  const normalizedName = normalizeComparisonStoryName(story && story.storyName ? story.storyName : "");
+  return `name:${normalizedName}`;
 }
 
 function buildStoryMap(snapshot) {
@@ -3489,12 +3664,23 @@ function buildSnapshotExportPayload(baseId, targetId) {
     return null;
   }
 
+  const toTraditionalSnapshot = (snapshot) => ({
+    id: snapshot.id,
+    mode: snapshot.mode,
+    capturedAt: snapshot.capturedAt,
+    sourceUrl: snapshot.sourceUrl,
+    storageMode: "full",
+    stories: Array.isArray(snapshot.stories)
+      ? snapshot.stories.map((story) => toTraditionalStoryRecord(story, snapshot.capturedAt))
+      : []
+  });
+
   return {
     exportedAt: nowIso(),
     baseSnapshotId: baseId,
     targetSnapshotId: targetId,
-    baseSnapshot,
-    targetSnapshot
+    baseSnapshot: toTraditionalSnapshot(baseSnapshot),
+    targetSnapshot: toTraditionalSnapshot(targetSnapshot)
   };
 }
 
@@ -3537,7 +3723,7 @@ async function exportAllSnapshotsJson() {
   const result = await getStorage([STORAGE_KEYS.snapshots, STORAGE_KEYS.lastAutoSnapshotDate]);
   const payload = {
     exportedAt: nowIso(),
-    mwSnapshots: Array.isArray(result[STORAGE_KEYS.snapshots]) ? result[STORAGE_KEYS.snapshots] : [],
+    mwSnapshots: buildTraditionalSnapshotsForTransfer(),
     mwLastAutoSnapshotDate: result[STORAGE_KEYS.lastAutoSnapshotDate] || ""
   };
 
@@ -3583,6 +3769,47 @@ async function exportAllSnapshotsJson() {
   );
 }
 
+async function exportLatestRawSnapshotJson() {
+  if (!Array.isArray(state.snapshots) || !state.snapshots.length) {
+    throw new Error("No snapshots available. Capture a snapshot first.");
+  }
+
+  const latestSnapshot = state.snapshots[state.snapshots.length - 1];
+  const payload = {
+    exportedAt: nowIso(),
+    type: "latest-raw-snapshot",
+    snapshot: latestSnapshot
+  };
+
+  const json = JSON.stringify(payload, null, 2);
+  const outputEl = document.getElementById("mw-transfer-json-output");
+  if (outputEl) {
+    outputEl.value = json;
+  }
+
+  let copied = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(json);
+      copied = true;
+    } catch {
+      copied = false;
+    }
+  }
+
+  if (!copied && outputEl) {
+    outputEl.focus();
+    outputEl.select();
+  }
+
+  setStatus(
+    copied
+      ? "Latest raw snapshot exported and copied to clipboard."
+      : "Latest raw snapshot exported. Clipboard unavailable; copy from the text box.",
+    false
+  );
+}
+
 async function importAllSnapshotsJson(rawJson) {
   if (!rawJson || !rawJson.trim()) {
     throw new Error("Paste exported JSON into the box before importing.");
@@ -3591,7 +3818,8 @@ async function importAllSnapshotsJson(rawJson) {
   const decoded = await decodeTransferPayload(rawJson);
   const parsed = decoded.payload;
 
-  const importedSnapshots = Array.isArray(parsed.mwSnapshots) ? parsed.mwSnapshots : [];
+  const importedTraditionalSnapshots = Array.isArray(parsed.mwSnapshots) ? parsed.mwSnapshots : [];
+  const importedSnapshots = await convertImportedSnapshotsToInternal(importedTraditionalSnapshots);
   const importedLastAutoDate = parsed.mwLastAutoSnapshotDate || "";
 
   await setStorage({
@@ -4707,6 +4935,7 @@ function createPanelMarkup() {
         font-size: 12px;
       }
       #${PANEL_IDS.panel} #mw-export-all,
+      #${PANEL_IDS.panel} #mw-export-latest-snapshot,
       #${PANEL_IDS.panel} #mw-import-all,
       #${PANEL_IDS.panel} #mw-compression-test,
       #${PANEL_IDS.panel} #mw-create-master-map,
@@ -4722,6 +4951,7 @@ function createPanelMarkup() {
         font-weight: 700;
       }
       #${PANEL_IDS.panel} #mw-export-all:hover,
+      #${PANEL_IDS.panel} #mw-export-latest-snapshot:hover,
       #${PANEL_IDS.panel} #mw-import-all:hover,
       #${PANEL_IDS.panel} #mw-compression-test:hover,
       #${PANEL_IDS.panel} #mw-create-master-map:hover,
@@ -4734,6 +4964,7 @@ function createPanelMarkup() {
         background: #e9d5ff;
       }
       #${PANEL_IDS.panel} #mw-export-all:focus-visible,
+      #${PANEL_IDS.panel} #mw-export-latest-snapshot:focus-visible,
       #${PANEL_IDS.panel} #mw-import-all:focus-visible,
       #${PANEL_IDS.panel} #mw-compression-test:focus-visible,
       #${PANEL_IDS.panel} #mw-create-master-map:focus-visible,
@@ -5166,6 +5397,7 @@ function createPanelMarkup() {
         <div class="mw-section-title">Advanced Features: Transfer Data</div>
         <div class="mw-row">
           <button id="mw-export-all" type="button">Export All</button>
+          <button id="mw-export-latest-snapshot" type="button">Export Latest Snapshot</button>
           <button id="mw-import-all" type="button">Import All</button>
           <button id="mw-compression-test" type="button">Compression Test</button>
           <button id="mw-create-master-map" type="button">Create Master Map</button>
@@ -5480,6 +5712,14 @@ function wirePanelEvents() {
     }
   });
 
+  document.getElementById("mw-export-latest-snapshot").addEventListener("click", async () => {
+    try {
+      await exportLatestRawSnapshotJson();
+    } catch (err) {
+      setStatus(err.message || "Export latest snapshot failed.", true);
+    }
+  });
+
   document.getElementById("mw-import-all").addEventListener("click", async () => {
     try {
       const outputEl = document.getElementById("mw-transfer-json-output");
@@ -5497,8 +5737,7 @@ function wirePanelEvents() {
   document.getElementById("mw-create-master-map").addEventListener("click", async () => {
     try {
       const summary = await createOrUpdateMasterStoryMapFromSnapshots();
-      state.hasMasterStoryMap = true;
-      applyMasterMapActionButtonLabel();
+      await refreshMasterMapPresence(true);
       setStatus(
         `${summary.createdFile ? "Created" : "Updated"} master map: scanned ${summary.scannedStories} story rows, added ${summary.addedStories}, refreshed ${summary.updatedStories}, total mapped ${summary.totalStories}.`
       );
@@ -5525,8 +5764,7 @@ function wirePanelEvents() {
     }
     try {
       const summary = await replaceMasterStoryMapFromSnapshots();
-      state.hasMasterStoryMap = true;
-      applyMasterMapActionButtonLabel();
+      await refreshMasterMapPresence(true);
       setStatus(
         `Replaced master map: scanned ${summary.scannedStories} story rows, added ${summary.addedStories}, refreshed ${summary.refreshedStories}, reused ${summary.reusedRefs} refs, merged ${summary.mergedDuplicates} duplicates, total mapped ${summary.totalStories}.`
       );
