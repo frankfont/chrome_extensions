@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Writer Success Stats for Medium",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Captures and compares Medium story stats snapshots.",
   "permissions": ["storage"],
   "host_permissions": ["https://medium.com/me/stats*"],

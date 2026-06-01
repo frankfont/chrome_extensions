@@ -236,9 +236,15 @@ The extension should show clear user-facing errors for cases such as:
 6. Open the extension panel from the toolbar icon or keyboard shortcut to create manual snapshots and run comparisons.
 7. Use `Compare Oldest to Newest` for full-range compare or Daily Changes Summary for day-level change detection.
 
-## Example Panel
+## Example Panel Screenshots
 
-![Screenshot Collapsed](example1.png)
+![Screenshot](ex1_collapsed1.png)
 
-![Screenshot Expanded](example2.png)
+![Screenshot](ex1_expanded1.png)
+
+![Screenshot](ex1_snapshots1.png)
+
+![Screenshot](ex1_compareAnyTwo.png)
+
+![Screenshot](ex1_trend1.png)
 
