@@ -40,6 +40,7 @@ const SNAPSHOT_TRANSFER_FORMAT_VERSION = 2;
 
 const STORAGE_KEYS = {
   snapshots: "mwSnapshots",
+  masterStoryMap: "mwMasterStoryMap",
   lastAutoSnapshotDate: "mwLastAutoSnapshotDate",
   trendGroupMaxSize: "mwTrendGroupMaxSize",
   trendGroupMaxCustomized: "mwTrendGroupMaxCustomized"
@@ -430,6 +431,209 @@ function setStorage(payload) {
       resolve();
     });
   });
+}
+
+function createEmptyMasterStoryMap() {
+  const now = nowIso();
+  return {
+    version: 1,
+    createdAt: now,
+    updatedAt: now,
+    nextStorySeq: 1,
+    totalStories: 0,
+    storiesByRef: {},
+    indexes: {
+      byStoryId: {},
+      byUrl: {},
+      byNormalizedName: {}
+    }
+  };
+}
+
+function normalizeMasterStoryMap(rawMap) {
+  const fallback = createEmptyMasterStoryMap();
+  const map = rawMap && typeof rawMap === "object" ? rawMap : fallback;
+
+  const storiesByRef = map.storiesByRef && typeof map.storiesByRef === "object"
+    ? map.storiesByRef
+    : {};
+
+  const rebuilt = {
+    version: Number(map.version) || 1,
+    createdAt: map.createdAt || fallback.createdAt,
+    updatedAt: map.updatedAt || fallback.updatedAt,
+    nextStorySeq: Number(map.nextStorySeq) || 1,
+    totalStories: 0,
+    storiesByRef,
+    indexes: {
+      byStoryId: {},
+      byUrl: {},
+      byNormalizedName: {}
+    }
+  };
+
+  let maxSeq = 0;
+  Object.keys(storiesByRef).forEach((ref) => {
+    const entry = storiesByRef[ref] || {};
+    const seqMatch = String(ref).match(/^s(\d+)$/i);
+    if (seqMatch) {
+      maxSeq = Math.max(maxSeq, Number(seqMatch[1]) || 0);
+    }
+
+    const storyId = String(entry.storyId || "").trim().toLowerCase();
+    const mediumUrl = String(entry.mediumUrl || "").trim().toLowerCase();
+    const normalizedName = String(entry.normalizedName || "").trim().toLowerCase();
+
+    if (storyId && !rebuilt.indexes.byStoryId[storyId]) {
+      rebuilt.indexes.byStoryId[storyId] = ref;
+    }
+    if (mediumUrl && !rebuilt.indexes.byUrl[mediumUrl]) {
+      rebuilt.indexes.byUrl[mediumUrl] = ref;
+    }
+    if (normalizedName && !rebuilt.indexes.byNormalizedName[normalizedName]) {
+      rebuilt.indexes.byNormalizedName[normalizedName] = ref;
+    }
+  });
+
+  rebuilt.totalStories = Object.keys(storiesByRef).length;
+  rebuilt.nextStorySeq = Math.max(Number(rebuilt.nextStorySeq) || 1, maxSeq + 1);
+  return rebuilt;
+}
+
+async function createOrUpdateMasterStoryMapFromSnapshots() {
+  const result = await getStorage([STORAGE_KEYS.masterStoryMap]);
+  const existingRaw = result[STORAGE_KEYS.masterStoryMap] || null;
+  const existingPresent = !!existingRaw;
+
+  const masterMap = normalizeMasterStoryMap(existingRaw);
+  const snapshots = Array.isArray(state.snapshots) ? [...state.snapshots] : [];
+  snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+
+  let scannedStories = 0;
+  let addedStories = 0;
+  let updatedStories = 0;
+
+  snapshots.forEach((snapshot) => {
+    const capturedAt = snapshot && snapshot.capturedAt ? snapshot.capturedAt : nowIso();
+    const stories = Array.isArray(snapshot && snapshot.stories) ? snapshot.stories : [];
+
+    stories.forEach((story) => {
+      scannedStories += 1;
+
+      const storyName = sanitizeText(story && story.storyName ? story.storyName : "");
+      const normalizedName = normalizeComparisonStoryName(storyName);
+      const normalizedUrl = normalizeMediumStoryUrl(story && story.mediumUrl ? story.mediumUrl : "").toLowerCase();
+      const storyIdFromUrl = getStoryIdFromUrl(story && story.mediumUrl ? story.mediumUrl : "");
+      const normalizedStoryId = String((story && story.storyId) || storyIdFromUrl || "").trim().toLowerCase();
+
+      if (!storyName && !normalizedStoryId && !normalizedUrl && !normalizedName) {
+        return;
+      }
+
+      let ref = "";
+      if (normalizedStoryId) {
+        ref = masterMap.indexes.byStoryId[normalizedStoryId] || "";
+      }
+      if (!ref && normalizedUrl) {
+        ref = masterMap.indexes.byUrl[normalizedUrl] || "";
+      }
+      if (!ref && normalizedName) {
+        ref = masterMap.indexes.byNormalizedName[normalizedName] || "";
+      }
+
+      const isNewRef = !ref;
+      if (!ref) {
+        ref = `s${masterMap.nextStorySeq}`;
+        masterMap.nextStorySeq += 1;
+      }
+
+      const existingEntry = masterMap.storiesByRef[ref] || {};
+      const mergedEntry = {
+        ref,
+        storyName: storyName || existingEntry.storyName || "",
+        normalizedName: normalizedName || existingEntry.normalizedName || "",
+        storyId: normalizedStoryId || existingEntry.storyId || "",
+        mediumUrl: normalizedUrl || existingEntry.mediumUrl || "",
+        createdAt: existingEntry.createdAt || capturedAt,
+        lastSeenAt: existingEntry.lastSeenAt || capturedAt
+      };
+
+      const existingSeenMs = new Date(existingEntry.lastSeenAt || 0).getTime();
+      const currentSeenMs = new Date(capturedAt).getTime();
+      if (Number.isFinite(currentSeenMs) && currentSeenMs > existingSeenMs) {
+        mergedEntry.lastSeenAt = capturedAt;
+      }
+
+      masterMap.storiesByRef[ref] = mergedEntry;
+
+      if (mergedEntry.storyId) {
+        masterMap.indexes.byStoryId[mergedEntry.storyId] = ref;
+      }
+      if (mergedEntry.mediumUrl) {
+        masterMap.indexes.byUrl[mergedEntry.mediumUrl] = ref;
+      }
+      if (mergedEntry.normalizedName) {
+        masterMap.indexes.byNormalizedName[mergedEntry.normalizedName] = ref;
+      }
+
+      if (isNewRef) {
+        addedStories += 1;
+      } else {
+        updatedStories += 1;
+      }
+    });
+  });
+
+  masterMap.totalStories = Object.keys(masterMap.storiesByRef).length;
+  masterMap.updatedAt = nowIso();
+
+  await setStorage({
+    [STORAGE_KEYS.masterStoryMap]: masterMap
+  });
+
+  return {
+    createdFile: !existingPresent,
+    scannedStories,
+    addedStories,
+    updatedStories,
+    totalStories: masterMap.totalStories
+  };
+}
+
+async function exportMasterStoryMapJson() {
+  const result = await getStorage([STORAGE_KEYS.masterStoryMap]);
+  const rawMap = result[STORAGE_KEYS.masterStoryMap] || null;
+  if (!rawMap) {
+    throw new Error("Master map not found. Click Create Master Map first.");
+  }
+
+  const json = JSON.stringify(rawMap, null, 2);
+  const outputEl = document.getElementById("mw-transfer-json-output");
+  if (outputEl) {
+    outputEl.value = json;
+  }
+
+  let copied = false;
+  if (navigator.clipboard && window.isSecureContext) {
+    try {
+      await navigator.clipboard.writeText(json);
+      copied = true;
+    } catch {
+      copied = false;
+    }
+  }
+
+  if (!copied && outputEl) {
+    outputEl.focus();
+    outputEl.select();
+  }
+
+  setStatus(
+    copied
+      ? "Master map JSON exported and copied to clipboard."
+      : "Master map JSON exported. Clipboard unavailable; copy from the text box.",
+    false
+  );
 }
 
 function getStorageBytesInUse(keys = null) {
@@ -4162,6 +4366,8 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} #mw-export-all,
       #${PANEL_IDS.panel} #mw-import-all,
       #${PANEL_IDS.panel} #mw-compression-test,
+      #${PANEL_IDS.panel} #mw-create-master-map,
+      #${PANEL_IDS.panel} #mw-export-master-map,
       #${PANEL_IDS.panel} #mw-audit-compare,
       #${PANEL_IDS.panel} #mw-export-audit-json,
       #${PANEL_IDS.panel} #mw-export-compare-json,
@@ -4174,6 +4380,8 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} #mw-export-all:hover,
       #${PANEL_IDS.panel} #mw-import-all:hover,
       #${PANEL_IDS.panel} #mw-compression-test:hover,
+      #${PANEL_IDS.panel} #mw-create-master-map:hover,
+      #${PANEL_IDS.panel} #mw-export-master-map:hover,
       #${PANEL_IDS.panel} #mw-audit-compare:hover,
       #${PANEL_IDS.panel} #mw-export-audit-json:hover,
       #${PANEL_IDS.panel} #mw-export-compare-json:hover,
@@ -4183,6 +4391,8 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} #mw-export-all:focus-visible,
       #${PANEL_IDS.panel} #mw-import-all:focus-visible,
       #${PANEL_IDS.panel} #mw-compression-test:focus-visible,
+      #${PANEL_IDS.panel} #mw-create-master-map:focus-visible,
+      #${PANEL_IDS.panel} #mw-export-master-map:focus-visible,
       #${PANEL_IDS.panel} #mw-audit-compare:focus-visible,
       #${PANEL_IDS.panel} #mw-export-audit-json:focus-visible,
       #${PANEL_IDS.panel} #mw-export-compare-json:focus-visible,
@@ -4612,6 +4822,8 @@ function createPanelMarkup() {
           <button id="mw-export-all" type="button">Export All</button>
           <button id="mw-import-all" type="button">Import All</button>
           <button id="mw-compression-test" type="button">Compression Test</button>
+          <button id="mw-create-master-map" type="button">Create Master Map</button>
+          <button id="mw-export-master-map" type="button">Export Master Map</button>
         </div>
         <textarea id="mw-transfer-json-output" class="mw-export-output" placeholder="Exported snapshot data appears here. Paste exported JSON here, then click Import All."></textarea>
       </div>
@@ -4933,6 +5145,25 @@ function wirePanelEvents() {
 
   document.getElementById("mw-compression-test").addEventListener("click", async () => {
     await runTransferCompressionSelfTest();
+  });
+
+  document.getElementById("mw-create-master-map").addEventListener("click", async () => {
+    try {
+      const summary = await createOrUpdateMasterStoryMapFromSnapshots();
+      setStatus(
+        `${summary.createdFile ? "Created" : "Updated"} master map: scanned ${summary.scannedStories} story rows, added ${summary.addedStories}, refreshed ${summary.updatedStories}, total mapped ${summary.totalStories}.`
+      );
+    } catch (err) {
+      setStatus(err.message || "Create Master Map failed.", true);
+    }
+  });
+
+  document.getElementById("mw-export-master-map").addEventListener("click", async () => {
+    try {
+      await exportMasterStoryMapJson();
+    } catch (err) {
+      setStatus(err.message || "Export Master Map failed.", true);
+    }
   });
 
   document.getElementById("mw-audit-compare").addEventListener("click", () => {

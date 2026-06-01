@@ -187,6 +187,8 @@ Story presence rules:
 	- Export automatically skips compression when compressed output is larger than original JSON.
 	- `Import All` restores snapshots from compressed transfer envelopes or older plain exported JSON.
 	- `Compression Test` runs a small round-trip compress/decompress test and writes a PASS/FAIL diagnostic report into the Transfer Data text box.
+	- `Create Master Map` creates/updates a persistent master story map in local storage by scanning all existing snapshots; it does not rewrite or transform snapshot rows.
+	- `Export Master Map` exports raw master map JSON content to the Transfer Data text box (and clipboard when available).
 	- Import compatibility includes: `lz-utf16`, prior `deflate-raw-base64`, and legacy plain JSON exports.
 - Advanced comparison export:
 	- `Export A/B JSON` is available via Advanced Features controls (Shift + `Compare Oldest to Newest`).
