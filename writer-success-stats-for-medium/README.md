@@ -64,9 +64,9 @@ The panel includes an easy-access **Daily Changes Summary** near the top.
 - It highlights Presentations, Views, Reads, and Earnings deltas for quick scanning.
 - Positive deltas are always prefixed with `+`.
 
-## Compare Dates Defaults
+## Compare Quick Buttons
 
-The **Compare Any Two** area supports manual picker-based comparisons and a default quick compare.
+The **Compare Any Two** area supports manual picker-based comparisons and quick compare buttons.
 
 - Compare results auto-refresh when Base/Target day or snapshot selections change.
 
@@ -74,16 +74,27 @@ The **Compare Any Two** area supports manual picker-based comparisons and a defa
 - All compare metric filters are enabled by default.
 - If a metric checkbox is unchecked, that metric no longer qualifies a story for inclusion in compare results.
 
-- `Run Default Comparison` logic:
-	- Base snapshot (A): **earliest available snapshot from the earliest date**.
-	- Target snapshot (B): **latest available snapshot from the latest date**.
+- Quick compare logic:
+	- `Compare Oldest to Newest`:
+		- Base snapshot (A): **earliest available snapshot from the earliest date**.
+		- Target snapshot (B): **latest available snapshot from the latest date**.
+	- `Compare 7 Days Ago to Newest`:
+		- Base snapshot (A): snapshot nearest to **7 days before** the latest snapshot timestamp.
+		- Target snapshot (B): **latest available snapshot**.
+		- Button is shown only when a snapshot exists within **+/-2 days** of the 7-day target.
+		- Button label reflects the actual selected offset (example: `Compare 6 Days Ago to Newest`).
+	- `Compare 30 Days Ago to Newest`:
+		- Base snapshot (A): snapshot nearest to **30 days before** the latest snapshot timestamp.
+		- Target snapshot (B): **latest available snapshot**.
+		- Button is shown only when a snapshot exists within **+/-2 days** of the 30-day target.
+		- Button label reflects the actual selected offset (example: `Compare 29 Days Ago to Newest`).
 
 - Advanced Features controls:
-	- Hold `Shift` while clicking `Run Default Comparison` to reveal `Audit Snapshot Pair`, `Export Audit JSON`, `Export A/B JSON`, the `Advanced Features: Transfer Data` section, and the `Advanced Features: Delete Data` section.
+	- Hold `Shift` while clicking `Compare Oldest to Newest` to reveal `Audit Snapshot Pair`, `Export Audit JSON`, `Export A/B JSON`, the `Advanced Features: Transfer Data` section, and the `Advanced Features: Delete Data` section.
 	- Click `Hide Advanced Features` to collapse all revealed Advanced Features controls and sections.
-	- Click `Run Default Comparison` without `Shift` also hides those Advanced Features controls again.
+	- Click `Compare Oldest to Newest` without `Shift` also hides those Advanced Features controls again.
 
-This gives a full-range comparison across all available saved history.
+These quick buttons provide full-range and time-window comparisons across available saved history.
 
 ## Keyboard Shortcuts
 
@@ -178,7 +189,7 @@ Story presence rules:
 	- `Compression Test` runs a small round-trip compress/decompress test and writes a PASS/FAIL diagnostic report into the Transfer Data text box.
 	- Import compatibility includes: `lz-utf16`, prior `deflate-raw-base64`, and legacy plain JSON exports.
 - Advanced comparison export:
-	- `Export A/B JSON` is available via Advanced Features controls (Shift + `Run Default Comparison`).
+	- `Export A/B JSON` is available via Advanced Features controls (Shift + `Compare Oldest to Newest`).
 - `Advanced Features: Delete Data` is hidden by default and is revealed from Advanced Features controls.
 - `Delete Data` currently supports deleting by specific timestamp in the visible UI.
 
@@ -211,7 +222,7 @@ The extension should show clear user-facing errors for cases such as:
 4. Select the `writer-success-stats-for-medium` folder.
 5. Visit `https://medium.com/me/stats` while logged into Medium.
 6. Open the extension panel from the toolbar icon or keyboard shortcut to create manual snapshots and run comparisons.
-7. Use `Run Default Comparison` for full-range compare or Daily Changes Summary for day-level change detection.
+7. Use `Compare Oldest to Newest` for full-range compare or Daily Changes Summary for day-level change detection.
 
 ## Example Panel
 

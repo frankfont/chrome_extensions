@@ -29,6 +29,7 @@ const AUTO_SCROLL_WAIT_TIMEOUT_MS = 1800;
 const COMPARE_AUTO_RENDER_DEBOUNCE_MS = 150;
 const ROUTE_CHECK_INTERVAL_MS = 500;
 const IO_COMPRESSION_TIMEOUT_MS = 3000;
+const COMPARE_DAYS_AGO_TOLERANCE_DAYS = 2;
 const DEFAULT_TREND_GROUP_MAX_SIZE = 50;
 const MIN_TREND_GROUP_MAX_SIZE = 2;
 const MAX_TREND_GROUP_MAX_SIZE = 1000;
@@ -1869,7 +1870,7 @@ function findDefaultComparison() {
   return [state.snapshots[0].id, latest.id];
 }
 
-function findCompareDatesDefault() {
+function findCompareOldestToNewest() {
   if (state.snapshots.length < 2) {
     return [null, null];
   }
@@ -1880,6 +1881,96 @@ function findCompareDatesDefault() {
   const earliest = state.snapshots[0];
   const latest = state.snapshots[state.snapshots.length - 1];
   return [earliest.id, latest.id];
+}
+
+function findCompareDaysAgoToNewest(daysAgo) {
+  if (state.snapshots.length < 2) {
+    return [null, null];
+  }
+
+  const latest = state.snapshots[state.snapshots.length - 1];
+  const latestTime = new Date(latest.capturedAt).getTime();
+  const dayCount = Number.isFinite(daysAgo) ? Math.max(1, Math.floor(daysAgo)) : 1;
+  const daysMs = dayCount * 24 * 60 * 60 * 1000;
+  const targetTime = latestTime - daysMs;
+  const toleranceMs = COMPARE_DAYS_AGO_TOLERANCE_DAYS * 24 * 60 * 60 * 1000;
+
+  let bestSnapshot = state.snapshots[0];
+  let bestDistance = Math.abs(new Date(bestSnapshot.capturedAt).getTime() - targetTime);
+
+  state.snapshots.forEach((snapshot) => {
+    if (snapshot.id === latest.id) {
+      return;
+    }
+
+    const snapshotTime = new Date(snapshot.capturedAt).getTime();
+    const distance = Math.abs(snapshotTime - targetTime);
+    if (distance < bestDistance) {
+      bestSnapshot = snapshot;
+      bestDistance = distance;
+      return;
+    }
+
+    if (distance === bestDistance) {
+      // If equally close, prefer the snapshot at/before the target date.
+      const currentBestTime = new Date(bestSnapshot.capturedAt).getTime();
+      const snapshotIsBefore = snapshotTime <= targetTime;
+      const bestIsBefore = currentBestTime <= targetTime;
+      if (snapshotIsBefore && !bestIsBefore) {
+        bestSnapshot = snapshot;
+      }
+    }
+  });
+
+  if (bestDistance > toleranceMs) {
+    return [null, null];
+  }
+
+  return [bestSnapshot.id, latest.id];
+}
+
+function findCompareThirtyDaysAgoToNewest() {
+  return findCompareDaysAgoToNewest(30);
+}
+
+function findCompareSevenDaysAgoToNewest() {
+  return findCompareDaysAgoToNewest(7);
+}
+
+function buildDaysAgoCompareLabel(baseSnapshotId, targetSnapshotId) {
+  const baseSnapshot = getSnapshotById(baseSnapshotId);
+  const targetSnapshot = getSnapshotById(targetSnapshotId);
+  if (!baseSnapshot || !targetSnapshot) {
+    return "";
+  }
+
+  const dayMs = 24 * 60 * 60 * 1000;
+  const diffMs = Math.max(0, new Date(targetSnapshot.capturedAt).getTime() - new Date(baseSnapshot.capturedAt).getTime());
+  const daysAgo = Math.round(diffMs / dayMs);
+  const dayWord = daysAgo === 1 ? "Day" : "Days";
+  return `Compare ${daysAgo} ${dayWord} Ago to Newest`;
+}
+
+function refreshDaysAgoCompareButtonsVisibility() {
+  const compare7Button = document.getElementById("mw-compare-7d-newest");
+  const compare30Button = document.getElementById("mw-compare-30d-newest");
+
+  const [sevenA, sevenB] = findCompareSevenDaysAgoToNewest();
+  const [thirtyA, thirtyB] = findCompareThirtyDaysAgoToNewest();
+
+  if (compare7Button) {
+    compare7Button.style.display = sevenA && sevenB ? "" : "none";
+    if (sevenA && sevenB) {
+      compare7Button.textContent = buildDaysAgoCompareLabel(sevenA, sevenB) || "Compare 7 Days Ago to Newest";
+    }
+  }
+
+  if (compare30Button) {
+    compare30Button.style.display = thirtyA && thirtyB ? "" : "none";
+    if (thirtyA && thirtyB) {
+      compare30Button.textContent = buildDaysAgoCompareLabel(thirtyA, thirtyB) || "Compare 30 Days Ago to Newest";
+    }
+  }
 }
 
 function getStoryKey(story) {
@@ -2321,6 +2412,57 @@ function compareNullableNumbers(a, b, direction) {
   return a > b ? -1 : 1;
 }
 
+function getComparableNumericValue(row, key) {
+  if (!row || !key) {
+    return null;
+  }
+
+  const raw = row[key];
+  const rawMissing = raw === null || raw === undefined || Number.isNaN(raw);
+  if (!rawMissing) {
+    return raw;
+  }
+
+  // For delta sorting, use the same effective values the UI shows for new/removed rows.
+  if (key === "presentationsDelta") {
+    if (row.status === "new") {
+      return row.presentationsB;
+    }
+    if (row.status === "removed") {
+      return row.presentationsA;
+    }
+  }
+
+  if (key === "viewsDelta") {
+    if (row.status === "new") {
+      return row.viewsB;
+    }
+    if (row.status === "removed") {
+      return row.viewsA;
+    }
+  }
+
+  if (key === "readsDelta") {
+    if (row.status === "new") {
+      return row.readsB;
+    }
+    if (row.status === "removed") {
+      return row.readsA;
+    }
+  }
+
+  if (key === "earningsDelta") {
+    if (row.status === "new") {
+      return row.earningsB;
+    }
+    if (row.status === "removed") {
+      return row.earningsA;
+    }
+  }
+
+  return null;
+}
+
 function sortCompareRows(rows) {
   if (!state.compareSortKey) {
     return rows;
@@ -2340,7 +2482,9 @@ function sortCompareRows(rows) {
       return direction === "asc" ? cmp : -cmp;
     }
 
-    const numericCmp = compareNullableNumbers(a[key], b[key], direction);
+    const leftValue = getComparableNumericValue(a, key);
+    const rightValue = getComparableNumericValue(b, key);
+    const numericCmp = compareNullableNumbers(leftValue, rightValue, direction);
     if (numericCmp !== 0) {
       return numericCmp;
     }
@@ -3879,12 +4023,13 @@ function refreshPanelData() {
   refreshSnapshotSummary();
   updateSmartCaptureHint();
   refreshSelectOptions();
+  refreshDaysAgoCompareButtonsVisibility();
   renderDailyChangesSummary();
   updateLauncherSignal();
 
-  const [defaultA, defaultB] = findCompareDatesDefault();
-  if (defaultA && defaultB && state.selectCompareA && state.selectCompareB && (!state.selectCompareA.value || !state.selectCompareB.value)) {
-    refreshSegmentedCompareSelectors(defaultA, defaultB);
+  const [oldestA, newestB] = findCompareOldestToNewest();
+  if (oldestA && newestB && state.selectCompareA && state.selectCompareB && (!state.selectCompareA.value || !state.selectCompareB.value)) {
+    refreshSegmentedCompareSelectors(oldestA, newestB);
   }
 
   renderDiff(state.selectCompareA ? state.selectCompareA.value : "", state.selectCompareB ? state.selectCompareB.value : "");
@@ -4484,10 +4629,12 @@ function createPanelMarkup() {
             <select id="mw-compare-a"></select>
             <select id="mw-compare-b-day"></select>
             <select id="mw-compare-b"></select>
-          <button id="mw-run-default-compare" type="button">Run Default Comparison</button>
-          <button id="mw-audit-compare" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Audit Snapshot Pair</button>
-          <button id="mw-export-audit-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Export Audit JSON</button>
-          <button id="mw-export-compare-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Export A/B JSON</button>
+          <button id="mw-compare-oldest-newest" type="button">Compare Oldest to Newest</button>
+          <button id="mw-compare-7d-newest" type="button">Compare 7 Days Ago to Newest</button>
+          <button id="mw-compare-30d-newest" type="button">Compare 30 Days Ago to Newest</button>
+          <button id="mw-audit-compare" type="button" style="display: none;" title="Hold Shift while clicking Compare Oldest to Newest to show this">Audit Snapshot Pair</button>
+          <button id="mw-export-audit-json" type="button" style="display: none;" title="Hold Shift while clicking Compare Oldest to Newest to show this">Export Audit JSON</button>
+          <button id="mw-export-compare-json" type="button" style="display: none;" title="Hold Shift while clicking Compare Oldest to Newest to show this">Export A/B JSON</button>
           <button id="mw-hide-advanced-features" type="button" style="display: none;">Hide Advanced Features</button>
         </div>
         <div id="mw-diff"></div>
@@ -4689,10 +4836,10 @@ function wirePanelEvents() {
     }
   });
 
-  document.getElementById("mw-run-default-compare").addEventListener("click", (event) => {
-    const [a, b] = findCompareDatesDefault();
+  document.getElementById("mw-compare-oldest-newest").addEventListener("click", (event) => {
+    const [a, b] = findCompareOldestToNewest();
     if (!a || !b) {
-      setStatus("Need at least two snapshots for default comparison.", true);
+      setStatus("Need at least two snapshots for oldest-to-newest comparison.", true);
       return;
     }
 
@@ -4700,7 +4847,31 @@ function wirePanelEvents() {
 
     refreshSegmentedCompareSelectors(a, b);
     renderDiff(a, b);
-    setStatus("Default comparison rendered.");
+    setStatus("Oldest-to-newest comparison rendered.");
+  });
+
+  document.getElementById("mw-compare-30d-newest").addEventListener("click", () => {
+    const [a, b] = findCompareThirtyDaysAgoToNewest();
+    if (!a || !b) {
+      setStatus(`Need a snapshot within +/-${COMPARE_DAYS_AGO_TOLERANCE_DAYS} days of 30 days ago to compare.`, true);
+      return;
+    }
+
+    refreshSegmentedCompareSelectors(a, b);
+    renderDiff(a, b);
+    setStatus("30-days-ago to newest comparison rendered.");
+  });
+
+  document.getElementById("mw-compare-7d-newest").addEventListener("click", () => {
+    const [a, b] = findCompareSevenDaysAgoToNewest();
+    if (!a || !b) {
+      setStatus(`Need a snapshot within +/-${COMPARE_DAYS_AGO_TOLERANCE_DAYS} days of 7 days ago to compare.`, true);
+      return;
+    }
+
+    refreshSegmentedCompareSelectors(a, b);
+    renderDiff(a, b);
+    setStatus("7-days-ago to newest comparison rendered.");
   });
 
   document.getElementById("mw-hide-advanced-features").addEventListener("click", () => {
