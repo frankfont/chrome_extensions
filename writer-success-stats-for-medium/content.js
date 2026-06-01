@@ -37,6 +37,7 @@ const TREND_COLOR_VIEWS = "#d97706";
 const TREND_COLOR_READS = "#2563eb";
 const TREND_COLOR_EARNINGS = "#16a34a";
 const SNAPSHOT_TRANSFER_FORMAT_VERSION = 2;
+const SNAPSHOT_PROGRESS_IDLE_MESSAGE = "Snapshot capture may auto-scroll this page to load all stories.";
 
 const STORAGE_KEYS = {
   snapshots: "mwSnapshots",
@@ -79,6 +80,7 @@ const state = {
   selectDeleteStory: null,
   selectDeleteTimestamp: null,
   smartCaptureHintEl: null,
+  captureProgressEl: null,
   statusEl: null,
   summaryEl: null,
   dailySummaryEl: null,
@@ -1856,6 +1858,16 @@ function setStatus(message, isError = false) {
   state.statusEl.style.color = isError ? "#8f1111" : "#0f5132";
 }
 
+function setCaptureProgressMessage(message, isBusy = false) {
+  if (!state.captureProgressEl) {
+    return;
+  }
+
+  const text = String(message || "").trim() || SNAPSHOT_PROGRESS_IDLE_MESSAGE;
+  state.captureProgressEl.textContent = text;
+  state.captureProgressEl.classList.toggle("mw-capture-progress-busy", !!isBusy);
+}
+
 function setSnapshotCaptureUiBusy(isBusy, activeButtonId = "") {
   const buttonConfigs = [
     {
@@ -1881,6 +1893,11 @@ function setSnapshotCaptureUiBusy(isBusy, activeButtonId = "") {
     state.statusEl.classList.toggle("mw-status-busy", !!isBusy);
     state.statusEl.style.color = isBusy ? "#7a2f00" : "#0f5132";
   }
+
+  setCaptureProgressMessage(
+    isBusy ? "Creating snapshot for today... preparing capture and loading stats rows." : SNAPSHOT_PROGRESS_IDLE_MESSAGE,
+    !!isBusy
+  );
 }
 
 function setBusyStatusMessage(message) {
@@ -1890,6 +1907,12 @@ function setBusyStatusMessage(message) {
   state.statusEl.textContent = message;
   state.statusEl.classList.add("mw-status-busy");
   state.statusEl.style.color = "#7a2f00";
+
+  const detail = String(message || "").trim();
+  const progressMessage = detail
+    ? `Creating snapshot for today... ${detail}`
+    : "Creating snapshot for today...";
+  setCaptureProgressMessage(progressMessage, true);
 }
 
 function countPotentialRows() {
@@ -3968,6 +3991,45 @@ function getAllStoryNames() {
   return Array.from(names).sort((a, b) => a.localeCompare(b));
 }
 
+function getTrendStoryNames() {
+  const materializedStories = getAllMaterializedSnapshots()
+    .flatMap((snapshot) => (Array.isArray(snapshot.stories) ? snapshot.stories : []));
+
+  const availableCanonicalKeys = new Set();
+  const fallbackDisplayByKey = new Map();
+  materializedStories.forEach((story) => {
+    const canonicalName = extractCanonicalStoryTitle(story && story.storyName ? story.storyName : "");
+    const key = normalizeComparisonStoryName(canonicalName);
+    if (!key) {
+      return;
+    }
+    availableCanonicalKeys.add(key);
+    if (!fallbackDisplayByKey.has(key)) {
+      fallbackDisplayByKey.set(key, canonicalName || String(story && story.storyName ? story.storyName : "").trim());
+    }
+  });
+
+  if (state.masterStoryMap && state.masterStoryMap.storiesByRef) {
+    const masterDisplayByKey = new Map();
+    Object.values(state.masterStoryMap.storiesByRef).forEach((entry) => {
+      const canonicalName = extractCanonicalStoryTitle(entry && entry.storyName ? entry.storyName : "");
+      const key = normalizeComparisonStoryName(canonicalName);
+      if (!key || !availableCanonicalKeys.has(key)) {
+        return;
+      }
+      if (!masterDisplayByKey.has(key)) {
+        masterDisplayByKey.set(key, canonicalName || String(entry && entry.storyName ? entry.storyName : "").trim());
+      }
+    });
+
+    if (masterDisplayByKey.size) {
+      return Array.from(masterDisplayByKey.values()).sort((a, b) => a.localeCompare(b));
+    }
+  }
+
+  return Array.from(fallbackDisplayByKey.values()).sort((a, b) => a.localeCompare(b));
+}
+
 function getTrendGroupLetter(storyName) {
   const first = String(formatStoryTitleForDisplay(storyName || "")).trim().charAt(0).toUpperCase();
   return /^[A-Z]$/.test(first) ? first : "#";
@@ -4137,10 +4199,11 @@ function getTrendRows(storyName, options = {}) {
   }
 
   const firstDayStrategy = options.firstDayStrategy === "earliest" ? "earliest" : "latest";
+  const targetCanonicalName = normalizeComparisonStoryName(storyName);
 
   const rows = [];
   getAllMaterializedSnapshots().forEach((snapshot) => {
-    const hit = snapshot.stories.find((story) => story.storyName === storyName);
+    const hit = snapshot.stories.find((story) => normalizeComparisonStoryName(story && story.storyName ? story.storyName : "") === targetCanonicalName);
     if (hit) {
       rows.push({
         capturedAt: snapshot.capturedAt,
@@ -4731,7 +4794,7 @@ function refreshSelectOptions(preferredTrendGroupKey = "") {
 
   if (state.selectTrendStory) {
     const old = state.selectTrendStory.value;
-    const stories = getAllStoryNames();
+    const stories = getTrendStoryNames();
     const groups = buildTrendStoryGroups(stories);
     state.trendStoryGroups = groups;
 
@@ -5039,6 +5102,21 @@ function createPanelMarkup() {
       }
       #${PANEL_IDS.panel} .mw-snapshot-actions {
         margin-bottom: 0;
+      }
+      #${PANEL_IDS.panel} .mw-capture-progress {
+        margin-top: 6px;
+        padding: 6px 8px;
+        border: 1px dashed #c8d5cc;
+        background: #f7fbf8;
+        color: #2f4f43;
+        font-size: 11px;
+      }
+      #${PANEL_IDS.panel} .mw-capture-progress-busy {
+        border-style: solid;
+        border-color: #cc7a00;
+        background: #fff2e6;
+        color: #7a2f00;
+        font-weight: 700;
       }
       #${PANEL_IDS.panel} .mw-snapshot-inline-summary {
         display: none;
@@ -5390,6 +5468,7 @@ function createPanelMarkup() {
           </div>
           <div id="mw-summary" class="mw-snapshot-inline-summary"></div>
         </div>
+        <div id="mw-capture-progress" class="mw-capture-progress">Snapshot capture may auto-scroll this page to load all stories.</div>
         <div id="mw-smart-capture-hint" class="mw-empty">Mode: Smart</div>
       </div>
 
@@ -5522,9 +5601,11 @@ function wirePanelEvents() {
   state.trendContainerEl = document.getElementById("mw-trend");
   state.selectDeleteStory = document.getElementById("mw-delete-story");
   state.selectDeleteTimestamp = document.getElementById("mw-delete-timestamp");
+  state.captureProgressEl = document.getElementById("mw-capture-progress");
   state.smartCaptureHintEl = document.getElementById("mw-smart-capture-hint");
   state.transferSectionEl = document.getElementById("mw-transfer-section");
   state.deleteSectionEl = document.getElementById("mw-delete-section");
+  setCaptureProgressMessage(SNAPSHOT_PROGRESS_IDLE_MESSAGE, false);
   setAuditSectionVisible(false);
   setTransferSectionVisible(false);
   setDeleteSectionVisible(false);
