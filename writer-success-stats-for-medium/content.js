@@ -4996,6 +4996,19 @@ function createPanelMarkup() {
         color: #111;
         padding: 4px 6px;
         font-size: 12px;
+        cursor: pointer;
+        transition: background 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+      }
+      #${PANEL_IDS.panel} button:hover:not(:disabled):not(.mw-busy-action):not(.mw-trend-filter-btn-disabled) {
+        background: #eaf3ee;
+        border-color: #3a7d58;
+        color: #0a4a2e;
+        box-shadow: 0 0 0 2px rgba(10, 92, 54, 0.15), 0 2px 6px rgba(10, 92, 54, 0.18);
+      }
+      #${PANEL_IDS.panel} button:focus-visible:not(:disabled) {
+        outline: 2px solid #0a5c36;
+        outline-offset: 2px;
+        box-shadow: 0 0 0 3px rgba(10, 92, 54, 0.18);
       }
       #${PANEL_IDS.panel} #mw-export-all,
       #${PANEL_IDS.panel} #mw-export-latest-snapshot,
@@ -5025,6 +5038,9 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} #mw-export-compare-json:hover,
       #${PANEL_IDS.panel} #mw-hide-advanced-features:hover {
         background: #e9d5ff;
+        border-color: #7e22ce;
+        color: #3b0764;
+        box-shadow: 0 0 0 2px rgba(126, 34, 206, 0.15), 0 2px 6px rgba(126, 34, 206, 0.18);
       }
       #${PANEL_IDS.panel} #mw-export-all:focus-visible,
       #${PANEL_IDS.panel} #mw-export-latest-snapshot:focus-visible,
@@ -5039,6 +5055,7 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} #mw-hide-advanced-features:focus-visible {
         outline: 2px solid #7e22ce;
         outline-offset: 2px;
+        box-shadow: 0 0 0 3px rgba(126, 34, 206, 0.18);
       }
       #${PANEL_IDS.panel} #mw-delete-story-btn,
       #${PANEL_IDS.panel} #mw-delete-timestamp-btn {
@@ -5050,11 +5067,15 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} #mw-delete-story-btn:hover,
       #${PANEL_IDS.panel} #mw-delete-timestamp-btn:hover {
         background: #ffe8cc;
+        border-color: #cc7a00;
+        color: #5c2000;
+        box-shadow: 0 0 0 2px rgba(204, 122, 0, 0.15), 0 2px 6px rgba(204, 122, 0, 0.22);
       }
       #${PANEL_IDS.panel} #mw-delete-story-btn:focus-visible,
       #${PANEL_IDS.panel} #mw-delete-timestamp-btn:focus-visible {
         outline: 2px solid #cc7a00;
         outline-offset: 2px;
+        box-shadow: 0 0 0 3px rgba(204, 122, 0, 0.22);
       }
       #${PANEL_IDS.panel} .mw-busy-action {
         background: #ffe8cc;
