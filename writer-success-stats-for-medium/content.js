@@ -103,8 +103,35 @@ const state = {
   deleteSectionEl: null,
   compareRenderTimer: null,
   compareSortKey: "",
-  compareSortDirection: "asc"
+  compareSortDirection: "asc",
+  hasMasterStoryMap: null,
+  masterMapPresenceRefreshInFlight: false
 };
+
+function applyMasterMapActionButtonLabel() {
+  const button = document.getElementById("mw-create-master-map");
+  if (!button) {
+    return;
+  }
+  button.textContent = state.hasMasterStoryMap ? "Update Master Map" : "Create Master Map";
+}
+
+async function refreshMasterMapPresence(force = false) {
+  if (state.masterMapPresenceRefreshInFlight && !force) {
+    return;
+  }
+
+  state.masterMapPresenceRefreshInFlight = true;
+  try {
+    const result = await getStorage([STORAGE_KEYS.masterStoryMap]);
+    const raw = result[STORAGE_KEYS.masterStoryMap];
+    const hasMap = !!(raw && typeof raw === "object" && raw.storiesByRef && typeof raw.storiesByRef === "object");
+    state.hasMasterStoryMap = hasMap;
+  } finally {
+    state.masterMapPresenceRefreshInFlight = false;
+    applyMasterMapActionButtonLabel();
+  }
+}
 
 function setAuditSectionVisible(visible) {
   if (!state.auditSectionEl) {
@@ -370,6 +397,188 @@ function formatStoryTitleForDisplay(storyName) {
   return String(storyName || "").replace(/\s*·\s*View\s+story\s*$/i, "").trim();
 }
 
+function extractCanonicalStoryTitle(storyName) {
+  const noViewSuffix = formatStoryTitleForDisplay(storyName || "");
+  const withoutReadMeta = noViewSuffix.replace(/\s*·?\s*\d+\s*min\s*read\b.*$/i, "");
+  return sanitizeText(withoutReadMeta || noViewSuffix);
+}
+
+function extractStoryPresentationMetadata(storyName) {
+  const raw = sanitizeText(storyName || "");
+  if (!raw) {
+    return {
+      readTimeText: "",
+      publishedDateText: ""
+    };
+  }
+
+  const noViewSuffix = formatStoryTitleForDisplay(raw);
+  const tokens = noViewSuffix
+    .split(/\s*·\s*/)
+    .map((token) => sanitizeText(token))
+    .filter(Boolean);
+
+  let readTimeText = "";
+  let publishedDateText = "";
+  for (let i = tokens.length - 1; i >= 0; i -= 1) {
+    const token = tokens[i];
+    if (!readTimeText && /^\d+\s*min\s*read$/i.test(token)) {
+      readTimeText = token;
+      continue;
+    }
+    if (!publishedDateText && /^[A-Za-z]{3,9}\s+\d{1,2},\s+\d{4}$/.test(token)) {
+      publishedDateText = token;
+    }
+  }
+
+  return {
+    readTimeText,
+    publishedDateText
+  };
+}
+
+function buildPresentationMetadataKey(readTimeText, publishedDateText) {
+  const readTime = sanitizeText(readTimeText || "").toLowerCase();
+  const publishedDate = sanitizeText(publishedDateText || "").toLowerCase();
+  if (!readTime && !publishedDate) {
+    return "";
+  }
+  return `${readTime}||${publishedDate}`;
+}
+
+function normalizePresentationSeenAtKeys(rawSeenAtKeys, fallbackFirst = "", fallbackLast = "") {
+  const unique = new Set();
+
+  if (Array.isArray(rawSeenAtKeys)) {
+    rawSeenAtKeys.forEach((value) => {
+      const normalized = sanitizeText(value || "");
+      if (normalized) {
+        unique.add(normalized);
+      }
+    });
+  }
+
+  [fallbackFirst, fallbackLast].forEach((value) => {
+    const normalized = sanitizeText(value || "");
+    if (normalized) {
+      unique.add(normalized);
+    }
+  });
+
+  return Array.from(unique).sort((a, b) => {
+    const aMs = new Date(a).getTime();
+    const bMs = new Date(b).getTime();
+    if (Number.isFinite(aMs) && Number.isFinite(bMs) && aMs !== bMs) {
+      return aMs - bMs;
+    }
+    return a.localeCompare(b);
+  });
+}
+
+function normalizePresentationMetadataHistory(rawHistory) {
+  if (!Array.isArray(rawHistory)) {
+    return [];
+  }
+
+  const map = new Map();
+  rawHistory.forEach((item) => {
+    if (!item || typeof item !== "object") {
+      return;
+    }
+
+    const readTimeText = sanitizeText(item.readTimeText || "");
+    const publishedDateText = sanitizeText(item.publishedDateText || "");
+    const key = buildPresentationMetadataKey(readTimeText, publishedDateText);
+    if (!key) {
+      return;
+    }
+
+    const candidateFirst = item.firstSeenAt || "";
+    const candidateLast = item.lastSeenAt || candidateFirst || "";
+    const candidateSeenAtKeys = normalizePresentationSeenAtKeys(item.seenAtKeys, candidateFirst, candidateLast);
+    const candidateCount = Math.max(1, Number(item.seenCount) || 1);
+
+    if (!map.has(key)) {
+      map.set(key, {
+        readTimeText,
+        publishedDateText,
+        firstSeenAt: candidateSeenAtKeys[0] || candidateFirst,
+        lastSeenAt: candidateSeenAtKeys[candidateSeenAtKeys.length - 1] || candidateLast,
+        seenAtKeys: candidateSeenAtKeys,
+        seenCount: candidateSeenAtKeys.length || candidateCount
+      });
+      return;
+    }
+
+    const existing = map.get(key);
+    existing.seenAtKeys = normalizePresentationSeenAtKeys(
+      [...(Array.isArray(existing.seenAtKeys) ? existing.seenAtKeys : []), ...candidateSeenAtKeys],
+      existing.firstSeenAt,
+      existing.lastSeenAt
+    );
+    existing.firstSeenAt = existing.seenAtKeys[0] || existing.firstSeenAt || candidateFirst;
+    existing.lastSeenAt = existing.seenAtKeys[existing.seenAtKeys.length - 1] || existing.lastSeenAt || candidateLast;
+    existing.seenCount = existing.seenAtKeys.length || Math.max(1, Number(existing.seenCount) || 1) + candidateCount;
+  });
+
+  return Array.from(map.values()).sort((a, b) => {
+    const aMs = new Date(a.firstSeenAt || 0).getTime();
+    const bMs = new Date(b.firstSeenAt || 0).getTime();
+    if (Number.isFinite(aMs) && Number.isFinite(bMs) && aMs !== bMs) {
+      return aMs - bMs;
+    }
+    return buildPresentationMetadataKey(a.readTimeText, a.publishedDateText)
+      .localeCompare(buildPresentationMetadataKey(b.readTimeText, b.publishedDateText));
+  });
+}
+
+function mergePresentationMetadataHistory(existingHistory, incomingHistory, readTimeText, publishedDateText, seenAt) {
+  const merged = normalizePresentationMetadataHistory(existingHistory);
+  const incoming = normalizePresentationMetadataHistory(incomingHistory);
+
+  if (incoming.length) {
+    incoming.forEach((item) => {
+      merged.push(item);
+    });
+  }
+
+  const key = buildPresentationMetadataKey(readTimeText, publishedDateText);
+  if (!key) {
+    return normalizePresentationMetadataHistory(merged);
+  }
+
+  const mergedMap = new Map();
+  normalizePresentationMetadataHistory(merged).forEach((item) => {
+    mergedMap.set(buildPresentationMetadataKey(item.readTimeText, item.publishedDateText), { ...item });
+  });
+
+  const existing = mergedMap.get(key);
+  if (!existing) {
+    const seenValue = seenAt || nowIso();
+    const seenAtKeys = normalizePresentationSeenAtKeys([seenValue], seenValue, seenValue);
+    mergedMap.set(key, {
+      readTimeText: sanitizeText(readTimeText || ""),
+      publishedDateText: sanitizeText(publishedDateText || ""),
+      firstSeenAt: seenAtKeys[0] || seenValue,
+      lastSeenAt: seenAtKeys[seenAtKeys.length - 1] || seenValue,
+      seenAtKeys,
+      seenCount: seenAtKeys.length || 1
+    });
+  } else {
+    const seenValue = seenAt || nowIso();
+    existing.seenAtKeys = normalizePresentationSeenAtKeys(
+      [...(Array.isArray(existing.seenAtKeys) ? existing.seenAtKeys : []), seenValue],
+      existing.firstSeenAt,
+      existing.lastSeenAt
+    );
+    existing.firstSeenAt = existing.seenAtKeys[0] || existing.firstSeenAt || seenValue;
+    existing.lastSeenAt = existing.seenAtKeys[existing.seenAtKeys.length - 1] || existing.lastSeenAt || seenValue;
+    existing.seenCount = existing.seenAtKeys.length || Math.max(1, Number(existing.seenCount) || 1);
+  }
+
+  return normalizePresentationMetadataHistory(Array.from(mergedMap.values()));
+}
+
 function getStatsPostUrl(story) {
   if (!story) {
     return "";
@@ -520,63 +729,11 @@ async function createOrUpdateMasterStoryMapFromSnapshots() {
     stories.forEach((story) => {
       scannedStories += 1;
 
-      const storyName = sanitizeText(story && story.storyName ? story.storyName : "");
-      const normalizedName = normalizeComparisonStoryName(storyName);
-      const normalizedUrl = normalizeMediumStoryUrl(story && story.mediumUrl ? story.mediumUrl : "").toLowerCase();
-      const storyIdFromUrl = getStoryIdFromUrl(story && story.mediumUrl ? story.mediumUrl : "");
-      const normalizedStoryId = String((story && story.storyId) || storyIdFromUrl || "").trim().toLowerCase();
-
-      if (!storyName && !normalizedStoryId && !normalizedUrl && !normalizedName) {
+      const upsert = upsertMasterMapStory(masterMap, story, capturedAt);
+      if (!upsert.ref) {
         return;
       }
-
-      let ref = "";
-      if (normalizedStoryId) {
-        ref = masterMap.indexes.byStoryId[normalizedStoryId] || "";
-      }
-      if (!ref && normalizedUrl) {
-        ref = masterMap.indexes.byUrl[normalizedUrl] || "";
-      }
-      if (!ref && normalizedName) {
-        ref = masterMap.indexes.byNormalizedName[normalizedName] || "";
-      }
-
-      const isNewRef = !ref;
-      if (!ref) {
-        ref = `s${masterMap.nextStorySeq}`;
-        masterMap.nextStorySeq += 1;
-      }
-
-      const existingEntry = masterMap.storiesByRef[ref] || {};
-      const mergedEntry = {
-        ref,
-        storyName: storyName || existingEntry.storyName || "",
-        normalizedName: normalizedName || existingEntry.normalizedName || "",
-        storyId: normalizedStoryId || existingEntry.storyId || "",
-        mediumUrl: normalizedUrl || existingEntry.mediumUrl || "",
-        createdAt: existingEntry.createdAt || capturedAt,
-        lastSeenAt: existingEntry.lastSeenAt || capturedAt
-      };
-
-      const existingSeenMs = new Date(existingEntry.lastSeenAt || 0).getTime();
-      const currentSeenMs = new Date(capturedAt).getTime();
-      if (Number.isFinite(currentSeenMs) && currentSeenMs > existingSeenMs) {
-        mergedEntry.lastSeenAt = capturedAt;
-      }
-
-      masterMap.storiesByRef[ref] = mergedEntry;
-
-      if (mergedEntry.storyId) {
-        masterMap.indexes.byStoryId[mergedEntry.storyId] = ref;
-      }
-      if (mergedEntry.mediumUrl) {
-        masterMap.indexes.byUrl[mergedEntry.mediumUrl] = ref;
-      }
-      if (mergedEntry.normalizedName) {
-        masterMap.indexes.byNormalizedName[mergedEntry.normalizedName] = ref;
-      }
-
-      if (isNewRef) {
+      if (upsert.added) {
         addedStories += 1;
       } else {
         updatedStories += 1;
@@ -597,6 +754,191 @@ async function createOrUpdateMasterStoryMapFromSnapshots() {
     addedStories,
     updatedStories,
     totalStories: masterMap.totalStories
+  };
+}
+
+function parseMasterStoryRefNumber(ref) {
+  const match = String(ref || "").match(/^s(\d+)$/i);
+  return match ? Number(match[1]) || 0 : 0;
+}
+
+function sortMasterStoryRefsAsc(refA, refB) {
+  const aNum = parseMasterStoryRefNumber(refA);
+  const bNum = parseMasterStoryRefNumber(refB);
+  if (aNum && bNum && aNum !== bNum) {
+    return aNum - bNum;
+  }
+  return String(refA).localeCompare(String(refB));
+}
+
+function upsertMasterMapStory(masterMap, storyLike, capturedAt, preferredRef = "") {
+  const canonicalStoryName = extractCanonicalStoryTitle(storyLike && storyLike.storyName ? storyLike.storyName : "");
+  const parsedPresentation = extractStoryPresentationMetadata(storyLike && storyLike.storyName ? storyLike.storyName : "");
+  const readTimeText = sanitizeText((storyLike && storyLike.readTimeText) || parsedPresentation.readTimeText || "");
+  const publishedDateText = sanitizeText((storyLike && storyLike.publishedDateText) || parsedPresentation.publishedDateText || "");
+  const normalizedName = normalizeComparisonStoryName(canonicalStoryName);
+  const normalizedUrl = normalizeMediumStoryUrl(storyLike && storyLike.mediumUrl ? storyLike.mediumUrl : "").toLowerCase();
+  const storyIdFromUrl = getStoryIdFromUrl(storyLike && storyLike.mediumUrl ? storyLike.mediumUrl : "");
+  const normalizedStoryId = String((storyLike && storyLike.storyId) || storyIdFromUrl || "").trim().toLowerCase();
+
+  if (!canonicalStoryName && !normalizedStoryId && !normalizedUrl && !normalizedName) {
+    return { added: false, updated: false, ref: "" };
+  }
+
+  let ref = "";
+  if (normalizedStoryId) {
+    ref = masterMap.indexes.byStoryId[normalizedStoryId] || "";
+  }
+  if (!ref && normalizedUrl) {
+    ref = masterMap.indexes.byUrl[normalizedUrl] || "";
+  }
+  if (!ref && normalizedName) {
+    ref = masterMap.indexes.byNormalizedName[normalizedName] || "";
+  }
+
+  if (!ref && preferredRef && !masterMap.storiesByRef[preferredRef]) {
+    ref = preferredRef;
+  }
+
+  const wasMissing = !ref;
+  if (!ref) {
+    ref = `s${masterMap.nextStorySeq}`;
+    masterMap.nextStorySeq += 1;
+  }
+
+  const preferredNum = parseMasterStoryRefNumber(ref);
+  if (preferredNum >= masterMap.nextStorySeq) {
+    masterMap.nextStorySeq = preferredNum + 1;
+  }
+
+  const existingEntry = masterMap.storiesByRef[ref] || {};
+  const existingCreatedMs = new Date(existingEntry.createdAt || capturedAt || nowIso()).getTime();
+  const candidateCreatedMs = new Date(capturedAt || nowIso()).getTime();
+  const createdAt = Number.isFinite(existingCreatedMs) && Number.isFinite(candidateCreatedMs)
+    ? (candidateCreatedMs < existingCreatedMs ? (capturedAt || existingEntry.createdAt || nowIso()) : (existingEntry.createdAt || capturedAt || nowIso()))
+    : (existingEntry.createdAt || capturedAt || nowIso());
+
+  const mergedEntry = {
+    ref,
+    storyName: canonicalStoryName || existingEntry.storyName || "",
+    normalizedName: normalizedName || existingEntry.normalizedName || "",
+    storyId: normalizedStoryId || existingEntry.storyId || "",
+    mediumUrl: normalizedUrl || existingEntry.mediumUrl || "",
+    latestReadTimeText: readTimeText || existingEntry.latestReadTimeText || "",
+    latestPublishedDateText: publishedDateText || existingEntry.latestPublishedDateText || "",
+    presentationMetadataHistory: mergePresentationMetadataHistory(
+      existingEntry.presentationMetadataHistory,
+      storyLike && storyLike.presentationMetadataHistory,
+      readTimeText,
+      publishedDateText,
+      capturedAt || nowIso()
+    ),
+    createdAt,
+    lastSeenAt: existingEntry.lastSeenAt || capturedAt || nowIso()
+  };
+
+  const existingSeenMs = new Date(existingEntry.lastSeenAt || 0).getTime();
+  const currentSeenMs = new Date(capturedAt || nowIso()).getTime();
+  if (Number.isFinite(currentSeenMs) && currentSeenMs > existingSeenMs) {
+    mergedEntry.lastSeenAt = capturedAt || nowIso();
+  }
+
+  masterMap.storiesByRef[ref] = mergedEntry;
+
+  if (mergedEntry.storyId) {
+    masterMap.indexes.byStoryId[mergedEntry.storyId] = ref;
+  }
+  if (mergedEntry.mediumUrl) {
+    masterMap.indexes.byUrl[mergedEntry.mediumUrl] = ref;
+  }
+  if (mergedEntry.normalizedName) {
+    masterMap.indexes.byNormalizedName[mergedEntry.normalizedName] = ref;
+  }
+
+  return {
+    added: wasMissing,
+    updated: !wasMissing,
+    ref
+  };
+}
+
+async function replaceMasterStoryMapFromSnapshots() {
+  const result = await getStorage([STORAGE_KEYS.masterStoryMap]);
+  const existingRaw = result[STORAGE_KEYS.masterStoryMap] || null;
+  if (!existingRaw) {
+    throw new Error("Master map not found. Click Create Master Map first.");
+  }
+
+  const existing = normalizeMasterStoryMap(existingRaw);
+  const rebuilt = createEmptyMasterStoryMap();
+  rebuilt.createdAt = existing.createdAt || rebuilt.createdAt;
+
+  let reusedRefs = 0;
+  let mergedDuplicates = 0;
+  const existingRefs = Object.keys(existing.storiesByRef || {}).sort(sortMasterStoryRefsAsc);
+  existingRefs.forEach((ref) => {
+    const entry = existing.storiesByRef[ref] || {};
+    const upsert = upsertMasterMapStory(
+      rebuilt,
+      {
+        storyName: entry.storyName || "",
+        storyId: entry.storyId || "",
+        mediumUrl: entry.mediumUrl || "",
+        readTimeText: entry.latestReadTimeText || "",
+        publishedDateText: entry.latestPublishedDateText || "",
+        presentationMetadataHistory: entry.presentationMetadataHistory
+      },
+      entry.createdAt || existing.createdAt || nowIso(),
+      ref
+    );
+    if (!upsert.ref) {
+      return;
+    }
+    if (upsert.ref === ref) {
+      reusedRefs += 1;
+    } else {
+      mergedDuplicates += 1;
+    }
+  });
+
+  const snapshots = Array.isArray(state.snapshots) ? [...state.snapshots] : [];
+  snapshots.sort((a, b) => new Date(a.capturedAt).getTime() - new Date(b.capturedAt).getTime());
+
+  let scannedStories = 0;
+  let addedStories = 0;
+  let refreshedStories = 0;
+
+  snapshots.forEach((snapshot) => {
+    const capturedAt = snapshot && snapshot.capturedAt ? snapshot.capturedAt : nowIso();
+    const stories = Array.isArray(snapshot && snapshot.stories) ? snapshot.stories : [];
+    stories.forEach((story) => {
+      scannedStories += 1;
+      const upsert = upsertMasterMapStory(rebuilt, story, capturedAt);
+      if (!upsert.ref) {
+        return;
+      }
+      if (upsert.added) {
+        addedStories += 1;
+      } else {
+        refreshedStories += 1;
+      }
+    });
+  });
+
+  rebuilt.totalStories = Object.keys(rebuilt.storiesByRef).length;
+  rebuilt.updatedAt = nowIso();
+
+  await setStorage({
+    [STORAGE_KEYS.masterStoryMap]: rebuilt
+  });
+
+  return {
+    scannedStories,
+    addedStories,
+    refreshedStories,
+    totalStories: rebuilt.totalStories,
+    reusedRefs,
+    mergedDuplicates
   };
 }
 
@@ -2193,7 +2535,7 @@ function buildStoryMap(snapshot) {
 }
 
 function normalizeComparisonStoryName(storyName) {
-  return sanitizeText(formatStoryTitleForDisplay(storyName || "")).toLowerCase();
+  return extractCanonicalStoryTitle(storyName || "").toLowerCase();
 }
 
 function getComparisonIdentity(story) {
@@ -4226,6 +4568,7 @@ function refreshSelectOptions(preferredTrendGroupKey = "") {
 function refreshPanelData() {
   refreshSnapshotSummary();
   updateSmartCaptureHint();
+  applyMasterMapActionButtonLabel();
   refreshSelectOptions();
   refreshDaysAgoCompareButtonsVisibility();
   renderDailyChangesSummary();
@@ -4368,6 +4711,7 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} #mw-compression-test,
       #${PANEL_IDS.panel} #mw-create-master-map,
       #${PANEL_IDS.panel} #mw-export-master-map,
+      #${PANEL_IDS.panel} #mw-replace-master-map,
       #${PANEL_IDS.panel} #mw-audit-compare,
       #${PANEL_IDS.panel} #mw-export-audit-json,
       #${PANEL_IDS.panel} #mw-export-compare-json,
@@ -4382,6 +4726,7 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} #mw-compression-test:hover,
       #${PANEL_IDS.panel} #mw-create-master-map:hover,
       #${PANEL_IDS.panel} #mw-export-master-map:hover,
+      #${PANEL_IDS.panel} #mw-replace-master-map:hover,
       #${PANEL_IDS.panel} #mw-audit-compare:hover,
       #${PANEL_IDS.panel} #mw-export-audit-json:hover,
       #${PANEL_IDS.panel} #mw-export-compare-json:hover,
@@ -4393,6 +4738,7 @@ function createPanelMarkup() {
       #${PANEL_IDS.panel} #mw-compression-test:focus-visible,
       #${PANEL_IDS.panel} #mw-create-master-map:focus-visible,
       #${PANEL_IDS.panel} #mw-export-master-map:focus-visible,
+      #${PANEL_IDS.panel} #mw-replace-master-map:focus-visible,
       #${PANEL_IDS.panel} #mw-audit-compare:focus-visible,
       #${PANEL_IDS.panel} #mw-export-audit-json:focus-visible,
       #${PANEL_IDS.panel} #mw-export-compare-json:focus-visible,
@@ -4824,6 +5170,7 @@ function createPanelMarkup() {
           <button id="mw-compression-test" type="button">Compression Test</button>
           <button id="mw-create-master-map" type="button">Create Master Map</button>
           <button id="mw-export-master-map" type="button">Export Master Map</button>
+          <button id="mw-replace-master-map" type="button">Replace Master Map</button>
         </div>
         <textarea id="mw-transfer-json-output" class="mw-export-output" placeholder="Exported snapshot data appears here. Paste exported JSON here, then click Import All."></textarea>
       </div>
@@ -5150,6 +5497,8 @@ function wirePanelEvents() {
   document.getElementById("mw-create-master-map").addEventListener("click", async () => {
     try {
       const summary = await createOrUpdateMasterStoryMapFromSnapshots();
+      state.hasMasterStoryMap = true;
+      applyMasterMapActionButtonLabel();
       setStatus(
         `${summary.createdFile ? "Created" : "Updated"} master map: scanned ${summary.scannedStories} story rows, added ${summary.addedStories}, refreshed ${summary.updatedStories}, total mapped ${summary.totalStories}.`
       );
@@ -5163,6 +5512,26 @@ function wirePanelEvents() {
       await exportMasterStoryMapJson();
     } catch (err) {
       setStatus(err.message || "Export Master Map failed.", true);
+    }
+  });
+
+  document.getElementById("mw-replace-master-map").addEventListener("click", async () => {
+    const confirmed = window.confirm(
+      "Replace Master Map will rebuild the map from existing snapshots and may merge duplicate story identities. Existing snapshots will not be changed. Continue?"
+    );
+    if (!confirmed) {
+      setStatus("Replace Master Map canceled.");
+      return;
+    }
+    try {
+      const summary = await replaceMasterStoryMapFromSnapshots();
+      state.hasMasterStoryMap = true;
+      applyMasterMapActionButtonLabel();
+      setStatus(
+        `Replaced master map: scanned ${summary.scannedStories} story rows, added ${summary.addedStories}, refreshed ${summary.refreshedStories}, reused ${summary.reusedRefs} refs, merged ${summary.mergedDuplicates} duplicates, total mapped ${summary.totalStories}.`
+      );
+    } catch (err) {
+      setStatus(err.message || "Replace Master Map failed.", true);
     }
   });
 
@@ -5424,6 +5793,7 @@ async function init() {
 
   await loadTrendGroupMaxSetting();
   await loadSnapshots();
+  await refreshMasterMapPresence();
   refreshPanelData();
 
   state.panelReady = true;

@@ -188,6 +188,11 @@ Story presence rules:
 	- `Import All` restores snapshots from compressed transfer envelopes or older plain exported JSON.
 	- `Compression Test` runs a small round-trip compress/decompress test and writes a PASS/FAIL diagnostic report into the Transfer Data text box.
 	- `Create Master Map` creates/updates a persistent master story map in local storage by scanning all existing snapshots; it does not rewrite or transform snapshot rows.
+	- Master map now stores story presentation metadata from the stats page (`min read` and published date) and tracks changes over time in `presentationMetadataHistory` per story.
+	- Each story also keeps `latestReadTimeText` and `latestPublishedDateText` for quick access to the most recently seen values.
+	- `presentationMetadataHistory` entries maintain `firstSeenAt`, `lastSeenAt`, and `seenCount` using unique snapshot timestamps, so rerunning `Create/Update Master Map` on unchanged data does not inflate counts.
+	- `Replace Master Map` shows a confirmation warning and rebuilds the existing master map from all snapshots, preserving existing `s#` refs where possible and merging duplicates when identities resolve to the same story.
+	- Master map name-based matching uses a canonical title form (removes volatile `min read`/date/`View story` suffix text) to avoid duplicate mappings for the same story.
 	- `Export Master Map` exports raw master map JSON content to the Transfer Data text box (and clipboard when available).
 	- Import compatibility includes: `lz-utf16`, prior `deflate-raw-base64`, and legacy plain JSON exports.
 - Advanced comparison export:
