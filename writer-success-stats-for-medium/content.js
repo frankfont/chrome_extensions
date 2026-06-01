@@ -3232,6 +3232,50 @@ function createPanelMarkup() {
         padding: 4px 6px;
         font-size: 12px;
       }
+      #${PANEL_IDS.panel} #mw-export-all,
+      #${PANEL_IDS.panel} #mw-import-all,
+      #${PANEL_IDS.panel} #mw-audit-compare,
+      #${PANEL_IDS.panel} #mw-export-audit-json,
+      #${PANEL_IDS.panel} #mw-export-compare-json,
+      #${PANEL_IDS.panel} #mw-hide-advanced-features {
+        background: #f3e8ff;
+        border-color: #7e22ce;
+        color: #581c87;
+        font-weight: 700;
+      }
+      #${PANEL_IDS.panel} #mw-export-all:hover,
+      #${PANEL_IDS.panel} #mw-import-all:hover,
+      #${PANEL_IDS.panel} #mw-audit-compare:hover,
+      #${PANEL_IDS.panel} #mw-export-audit-json:hover,
+      #${PANEL_IDS.panel} #mw-export-compare-json:hover,
+      #${PANEL_IDS.panel} #mw-hide-advanced-features:hover {
+        background: #e9d5ff;
+      }
+      #${PANEL_IDS.panel} #mw-export-all:focus-visible,
+      #${PANEL_IDS.panel} #mw-import-all:focus-visible,
+      #${PANEL_IDS.panel} #mw-audit-compare:focus-visible,
+      #${PANEL_IDS.panel} #mw-export-audit-json:focus-visible,
+      #${PANEL_IDS.panel} #mw-export-compare-json:focus-visible,
+      #${PANEL_IDS.panel} #mw-hide-advanced-features:focus-visible {
+        outline: 2px solid #7e22ce;
+        outline-offset: 2px;
+      }
+      #${PANEL_IDS.panel} #mw-delete-story-btn,
+      #${PANEL_IDS.panel} #mw-delete-timestamp-btn {
+        background: #fff2e6;
+        border-color: #cc7a00;
+        color: #7a2f00;
+        font-weight: 700;
+      }
+      #${PANEL_IDS.panel} #mw-delete-story-btn:hover,
+      #${PANEL_IDS.panel} #mw-delete-timestamp-btn:hover {
+        background: #ffe8cc;
+      }
+      #${PANEL_IDS.panel} #mw-delete-story-btn:focus-visible,
+      #${PANEL_IDS.panel} #mw-delete-timestamp-btn:focus-visible {
+        outline: 2px solid #cc7a00;
+        outline-offset: 2px;
+      }
       #${PANEL_IDS.panel} .mw-busy-action {
         background: #ffe8cc;
         border-color: #cc7a00;
