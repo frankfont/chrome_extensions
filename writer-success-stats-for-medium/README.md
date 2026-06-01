@@ -32,6 +32,7 @@ This extension stores values as text and numbers. It does not take screenshots.
 	- `Shift+Click` on `Capture Snapshot` forces a full snapshot.
 	- `Option+Click` on `Capture Snapshot` forces a delta snapshot.
 - Multiple manual snapshots per day are allowed.
+- During capture, the status area shows live progress messages while row loading/scrolling is in progress.
 - Hybrid storage model:
 	- First snapshot of each day is stored as a full snapshot.
 	- Later snapshots on the same day are stored sparsely (only changed story records).
@@ -78,7 +79,7 @@ The **Compare Any Two** area supports manual picker-based comparisons and a defa
 	- Target snapshot (B): **latest available snapshot from the latest date**.
 
 - Advanced Features controls:
-	- Hold `Shift` while clicking `Run Default Comparison` to reveal `Advanced Features: Audit Snapshot Pair`, `Advanced Features: Export Audit JSON`, `Advanced Features: Export A/B JSON`, the `Advanced Features: Transfer Data` section, and the `Advanced Features: Delete Data` section.
+	- Hold `Shift` while clicking `Run Default Comparison` to reveal `Audit Snapshot Pair`, `Export Audit JSON`, `Export A/B JSON`, the `Advanced Features: Transfer Data` section, and the `Advanced Features: Delete Data` section.
 	- Click `Hide Advanced Features` to collapse all revealed Advanced Features controls and sections.
 	- Click `Run Default Comparison` without `Shift` also hides those Advanced Features controls again.
 
@@ -100,7 +101,8 @@ Shortcut setup:
 ## Parsing Behavior
 
 - Data source is the Medium stats page DOM.
-- The extension auto-scrolls the page to load more rows.
+- The extension resets scroll position to the top, then auto-scrolls downward to load more rows.
+- Capture status displays live pass/row-count progress during auto-scroll so long operations are visible.
 - Scroll stop rule: stop when no new rows appear after `N` scrolls, where `N = 3`.
 - Number/currency format assumption: American English only.
 
@@ -176,7 +178,7 @@ Story presence rules:
 	- `Compression Test` runs a small round-trip compress/decompress test and writes a PASS/FAIL diagnostic report into the Transfer Data text box.
 	- Import compatibility includes: `lz-utf16`, prior `deflate-raw-base64`, and legacy plain JSON exports.
 - Advanced comparison export:
-	- `Advanced Features: Export A/B JSON` is available via Advanced Features controls (Shift + `Run Default Comparison`).
+	- `Export A/B JSON` is available via Advanced Features controls (Shift + `Run Default Comparison`).
 - `Advanced Features: Delete Data` is hidden by default and is revealed from Advanced Features controls.
 - `Delete Data` currently supports deleting by specific timestamp in the visible UI.
 

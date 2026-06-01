@@ -4485,9 +4485,9 @@ function createPanelMarkup() {
             <select id="mw-compare-b-day"></select>
             <select id="mw-compare-b"></select>
           <button id="mw-run-default-compare" type="button">Run Default Comparison</button>
-          <button id="mw-audit-compare" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Advanced Features: Audit Snapshot Pair</button>
-          <button id="mw-export-audit-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Advanced Features: Export Audit JSON</button>
-          <button id="mw-export-compare-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Advanced Features: Export A/B JSON</button>
+          <button id="mw-audit-compare" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Audit Snapshot Pair</button>
+          <button id="mw-export-audit-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Export Audit JSON</button>
+          <button id="mw-export-compare-json" type="button" style="display: none;" title="Hold Shift while clicking Run Default Comparison to show this">Export A/B JSON</button>
           <button id="mw-hide-advanced-features" type="button" style="display: none;">Hide Advanced Features</button>
         </div>
         <div id="mw-diff"></div>
